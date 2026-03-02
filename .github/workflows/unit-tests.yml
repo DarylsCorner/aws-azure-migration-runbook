@@ -1,0 +1,84 @@
+name: Unit Tests
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  pester:
+    name: Pester unit tests
+    runs-on: windows-latest           # PowerShell 7 is pre-installed on windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path           = '.\tests\Unit\'
+          $cfg.Output.Verbosity   = 'Detailed'
+          $cfg.TestResult.Enabled = $true
+          $cfg.TestResult.OutputFormat = 'JUnitXml'
+          $cfg.TestResult.OutputPath   = 'test-results.xml'
+          $r = Invoke-Pester -Configuration $cfg
+          Write-Host "Passed: $($r.PassedCount)  Failed: $($r.FailedCount)  Skipped: $($r.SkippedCount)"
+          if ($r.FailedCount -gt 0) { exit 1 }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results
+          path: test-results.xml
+
+  powershell-syntax:
+    name: PowerShell syntax check
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check syntax of all .ps1 files
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Recurse -Filter *.ps1 -Exclude *.Tests.ps1
+          $errors = @()
+          foreach ($f in $files) {
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $f.FullName, [ref]$null, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              foreach ($e in $parseErrors) {
+                $errors += "$($f.FullName):$($e.Extent.StartLineNumber): $($e.Message)"
+              }
+            }
+          }
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host "ERROR: $_" -ForegroundColor Red }
+            exit 1
+          }
+          Write-Host "All $($files.Count) PowerShell files parsed cleanly."
+
+  shellcheck:
+    name: ShellCheck (Bash scripts)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          severity: warning
+          ignore_paths: tests/Unit

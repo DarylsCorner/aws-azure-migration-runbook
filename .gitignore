@@ -1,0 +1,19 @@
+# Test outputs
+tests/reports/
+*.xml
+*.json.bak
+
+# PowerShell temp files
+*.ps1.bak
+
+# Azure CLI / Az module cache
+.azure/
+
+# VS Code
+.vscode/settings.json
+.vscode/launch.json
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
