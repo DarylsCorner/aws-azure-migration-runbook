@@ -6,8 +6,6 @@
 [![Azure](https://img.shields.io/badge/Azure-Compatible-0078D4?logo=microsoft-azure)](https://azure.microsoft.com)
 [![Azure Migrate](https://img.shields.io/badge/Azure_Migrate-Integrated-0078D4?logo=microsoft-azure)](https://learn.microsoft.com/en-us/azure/migrate/)
 [![Unit Tests](https://github.com/DarylsCorner/aws-azure-migration-runbook/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/DarylsCorner/aws-azure-migration-runbook/actions/workflows/unit-tests.yml)
-![GitHub last commit](https://img.shields.io/github/last-commit/DarylsCorner/aws-azure-migration-runbook)
-![GitHub issues](https://img.shields.io/github/issues/DarylsCorner/aws-azure-migration-runbook)
 
 Removes AWS-specific in-guest components from VMs migrated to Azure via **Azure Migrate**.  
 Every action is **idempotent** and **non-destructive to application binaries**, making it safe to run during Test Migration and again at final cutover.
