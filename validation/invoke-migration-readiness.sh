@@ -394,13 +394,12 @@ check_path "/var/lib/ssm-user/.aws"        "ssm-user .aws credentials"   "Creden
 check_path "/var/lib/codedeploy-agent/.aws" "codedeploy .aws credentials" "Credentials"
 
 # Warn about user home dirs (not auto-removed by cleanup script)
-if ls /home/*/.aws 2>/dev/null | grep -q '.'; then
-    for d in /home/*/.aws; do
-        add_finding "Credentials" "User .aws: $d" "Warning" \
-            "$d" \
-            "Manual review required — cleanup script does not auto-remove user home .aws dirs"
-    done
-fi
+for d in /home/*/.aws; do
+    [[ -d "$d" ]] || continue
+    add_finding "Credentials" "User .aws: $d" "Warning" \
+        "$d" \
+        "Manual review required — cleanup script does not auto-remove user home .aws dirs"
+done
 
 # ── AWS Agent Config Directories ─────────────────────────────────────────────
 echo "--- AWS Agent Directories ---"

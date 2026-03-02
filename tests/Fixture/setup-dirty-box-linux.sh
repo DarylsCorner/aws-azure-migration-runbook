@@ -56,7 +56,7 @@ fi
 
 MARKER="MIGRATION-TEST-DIRTYBOX"
 MANIFEST="/tmp/dirtybox-manifest.txt"
-> "$MANIFEST"
+true > "$MANIFEST"
 
 ok()     { echo "  [+] $1"; }
 skip()   { echo "  [~] SKIP: $1"; }

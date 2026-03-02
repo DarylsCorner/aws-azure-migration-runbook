@@ -276,12 +276,15 @@ for dir in /var/lib/ssm-user/.aws /var/lib/codedeploy-agent/.aws; do
 done
 
 # Warn about remaining user home dirs with .aws credentials
-if ls /home/*/.aws 2>/dev/null | grep -q '.'; then
-    log WARN "Found .aws directories under /home/* — these must be reviewed by application owners"
-    for d in /home/*/.aws; do
-        add_action "Found User .aws: $d" "Skipped" "Manual review required — not auto-removed"
-    done
-fi
+_found_user_aws=false
+for d in /home/*/.aws; do
+    [[ -d "$d" ]] || continue
+    if ! $_found_user_aws; then
+        log WARN "Found .aws directories under /home/* — these must be reviewed by application owners"
+        _found_user_aws=true
+    fi
+    add_action "Found User .aws: $d" "Skipped" "Manual review required — not auto-removed"
+done
 
 # /etc/aws* — configuration directories written by agents
 remove_path_if_present "/etc/amazon/ssm"       "SSM Agent config directory"
