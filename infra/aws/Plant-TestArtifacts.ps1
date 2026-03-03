@@ -373,7 +373,7 @@ function Build-LinuxPlantScript {
     $parts.Add('fi')
     $parts.Add('mkdir -p /usr/share/nginx/html/healthz')
     $parts.Add('[[ -f /usr/share/nginx/html/healthz/index.html ]] || {')
-    $parts.Add('  echo '''{"status":"ok","app":"MigTestApp","check":"pre-cleanup"}''' > /usr/share/nginx/html/healthz/index.html')
+    $parts.Add('  echo "{\"status\":\"ok\",\"app\":\"MigTestApp\",\"check\":\"pre-cleanup\"}" > /usr/share/nginx/html/healthz/index.html')
     $parts.Add('  planted+=("Workload: healthz page")')
     $parts.Add('}')
     $parts.Add('systemctl enable nginx >/dev/null 2>&1')
