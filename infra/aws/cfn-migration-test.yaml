@@ -96,7 +96,7 @@ Resources:
   WindowsSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Migration test — Windows (RDP + outbound HTTPS for Azure Migrate)
+      GroupDescription: Migration test - Windows (RDP + outbound HTTPS for Azure Migrate)
       VpcId: !Ref MigTestVpc
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -109,7 +109,7 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: '0.0.0.0/0'
-          Description: HTTPS inbound (Azure Migrate appliance → agent)
+          Description: HTTPS inbound (Azure Migrate appliance to agent)
         - IpProtocol: tcp
           FromPort: 9443
           ToPort: 9443
@@ -124,7 +124,7 @@ Resources:
   LinuxSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Migration test — Linux (SSH + outbound HTTPS for Azure Migrate)
+      GroupDescription: Migration test - Linux (SSH + outbound HTTPS for Azure Migrate)
       VpcId: !Ref MigTestVpc
       SecurityGroupIngress:
         - IpProtocol: tcp
