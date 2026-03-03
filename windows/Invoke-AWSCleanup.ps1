@@ -307,7 +307,7 @@ $awsServices = @(
     @{ Name = 'AmazonCloudWatchAgent'; Friendly = 'AWS CloudWatch Agent' },
     @{ Name = 'EC2Config';             Friendly = 'EC2Config (legacy)' },
     @{ Name = 'EC2Launch';             Friendly = 'EC2Launch v1' },
-    @{ Name = 'AmazonEC2Launch';       Friendly = 'EC2Launch v2' },
+    @{ Name = 'Amazon EC2Launch';      Friendly = 'EC2Launch v2' },
     @{ Name = 'KinesisAgent';          Friendly = 'AWS Kinesis Agent for Windows' },
     @{ Name = 'AWSNitroEnclaves';      Friendly = 'AWS Nitro Enclaves' },
     @{ Name = 'AWSCodeDeployAgent';    Friendly = 'AWS CodeDeploy Agent' }

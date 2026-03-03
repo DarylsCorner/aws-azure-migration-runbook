@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Scans both AWS test VMs for AWS components and produces a pre-migration
@@ -56,7 +56,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Resolve paths ─────────────────────────────────────────────────────────────
+# -- Resolve paths --
 
 if ([string]::IsNullOrWhiteSpace($EnvFile)) {
     $EnvFile = Join-Path $PSScriptRoot 'test-env.json'
@@ -83,7 +83,7 @@ Write-Host "  Linux instance   : $linuxId"
 Write-Host "  Region           : $Region"
 Write-Host "  Output           : $OutputDir`n"
 
-# ── Helper: wait for SSM instance to be online ───────────────────────────────
+# -- Helper: wait for SSM instance to be online --
 
 function Wait-SsmOnline {
     param([string]$InstanceId, [string]$Region, [int]$TimeoutSec = 300)
@@ -107,7 +107,7 @@ function Wait-SsmOnline {
     }
 }
 
-# ── Helper: run SSM command and return stdout ──────────────────────────────────
+# -- Helper: run SSM command and return stdout --
 
 function Invoke-SsmCommand {
     param(
@@ -118,14 +118,25 @@ function Invoke-SsmCommand {
         [int]      $TimeoutSec = 120
     )
 
-    # Send command
-    $cmdJson = $Commands | ConvertTo-Json -Compress
+    # Split multiline scripts into individual lines so SSM executes them
+    # correctly (ConvertTo-Json of a single multiline string produces literal
+    # \r\n escape sequences which SSM does not expand on the remote host).
+    $lines = $Commands | ForEach-Object { $_ -split "`r?`n" }
+    $lines = $lines | Where-Object { $null -ne $_ }   # drop nulls
+    $cmdJson = $lines | ConvertTo-Json -Compress
+
+    # Write the parameters to a temp file to avoid shell quoting / length issues
+    $paramFile = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($paramFile, "{`"commands`":$cmdJson}", [System.Text.UTF8Encoding]::new($false))
+
     $sendResult = aws ssm send-command `
         --instance-ids  $InstanceId `
         --document-name $DocumentName `
-        --parameters    "commands=$cmdJson" `
+        --parameters    "file://$paramFile" `
         --region        $Region `
         --output json | ConvertFrom-Json
+
+    Remove-Item $paramFile -Force -ErrorAction SilentlyContinue
 
     $commandId = $sendResult.Command.CommandId
 
@@ -152,7 +163,7 @@ function Invoke-SsmCommand {
     }
 }
 
-# ── Wait for both agents ─────────────────────────────────────────────────────
+# -- Wait for both agents --
 
 $winOnline = Wait-SsmOnline -InstanceId $windowsId -Region $Region -TimeoutSec 600
 $lnxOnline = Wait-SsmOnline -InstanceId $linuxId   -Region $Region -TimeoutSec 600
@@ -161,28 +172,28 @@ if (-not $winOnline -or -not $lnxOnline) {
     Write-Warning "One or both instances did not come online in time. Proceeding with available instances."
 }
 
-# ── Windows scan script ───────────────────────────────────────────────────────
+# -- Windows scan script --
 
 $windowsScan = @'
 $out = [System.Collections.ArrayList]::new()
 function Add-Section { param($title) $out.Add("`n### $title ###") | Out-Null }
 function Add-Line    { param($line)  $out.Add($line)              | Out-Null }
 
-# ── Services ──────────────────────────────────────────────────────────────────
+# -- Services --
 Add-Section "SERVICES (AWS)"
 $awsSvcNames = @('AmazonSSMAgent','AmazonCloudWatchAgent','EC2Config','EC2Launch',
-                 'AmazonEC2Launch','KinesisAgent','AWSCodeDeployAgent')
+                 'Amazon EC2Launch','KinesisAgent','AWSCodeDeployAgent')
 foreach ($name in $awsSvcNames) {
     $s = Get-Service -Name $name -ErrorAction SilentlyContinue
-    if ($s) { Add-Line "  FOUND    $($s.Name) — Status=$($s.Status) StartType=$($s.StartType)" }
+    if ($s) { Add-Line "  FOUND    $($s.Name) - Status=$($s.Status) StartType=$($s.StartType)" }
     else     { Add-Line "  missing  $name" }
 }
 
 # Any other Amazon/AWS services not in the expected list
 $others = Get-Service | Where-Object { $_.Name -match '(?i)amazon|ssmagent|ec2|awscode' -and $_.Name -notin $awsSvcNames }
-foreach ($s in $others) { Add-Line "  EXTRA    $($s.Name) — $($s.DisplayName)" }
+foreach ($s in $others) { Add-Line "  EXTRA    $($s.Name) - $($s.DisplayName)" }
 
-# ── AWS executables ────────────────────────────────────────────────────────────
+# -- AWS executables --
 Add-Section "EXECUTABLES"
 $exePaths = @(
     'C:\Program Files\Amazon\SSM\amazon-ssm-agent.exe',
@@ -202,7 +213,7 @@ foreach ($p in $exePaths) {
 $awsCli = Get-Command aws -ErrorAction SilentlyContinue
 Add-Line "  aws CLI on PATH: $(if ($awsCli) { $awsCli.Source } else { 'NOT FOUND' })"
 
-# ── Registry hives ─────────────────────────────────────────────────────────────
+# -- Registry hives --
 Add-Section "REGISTRY"
 $regPaths = @(
     'HKLM:\SOFTWARE\Amazon\EC2ConfigService',
@@ -225,15 +236,15 @@ foreach ($p in $regPaths) {
     }
 }
 
-# ── Scheduled tasks ────────────────────────────────────────────────────────────
+# -- Scheduled tasks --
 Add-Section "SCHEDULED TASKS (Amazon)"
 $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue |
          Where-Object { $_.TaskPath -match '\\Amazon\\' -or $_.TaskName -match '(?i)amazon|ec2|ssm|cloudwatch' }
 if ($tasks) {
-    foreach ($t in $tasks) { Add-Line "  FOUND    $($t.TaskPath)$($t.TaskName) — State=$($t.State)" }
+    foreach ($t in $tasks) { Add-Line "  FOUND    $($t.TaskPath)$($t.TaskName) - State=$($t.State)" }
 } else { Add-Line "  none found" }
 
-# ── .aws credentials ───────────────────────────────────────────────────────────
+# -- .aws credentials --
 Add-Section "AWS CREDENTIALS FILES"
 $searchRoots = @('C:\Users', 'C:\Windows\System32\config\systemprofile',
                  'C:\Windows\ServiceProfiles\NetworkService',
@@ -246,14 +257,14 @@ foreach ($root in $searchRoots) {
     }
 }
 
-# ── Hosts file entries ─────────────────────────────────────────────────────────
+# -- Hosts file entries --
 Add-Section "HOSTS FILE (EC2 entries)"
 $hostsFile = "$env:SystemRoot\System32\drivers\etc\hosts"
 Get-Content $hostsFile -ErrorAction SilentlyContinue |
     Where-Object { $_ -match '169\.254\.169\.254|ec2\.internal|instance-data' } |
     ForEach-Object { Add-Line "  $($_.Trim())" }
 
-# ── Program directories ────────────────────────────────────────────────────────
+# -- Program directories --
 Add-Section "PROGRAM DIRECTORIES"
 $dirs = @(
     'C:\Program Files\Amazon',
@@ -269,7 +280,7 @@ foreach ($d in $dirs) {
     } else { Add-Line "  missing  $d" }
 }
 
-# ── Environment variables ──────────────────────────────────────────────────────
+# -- Environment variables --
 Add-Section "ENVIRONMENT VARIABLES (AWS)"
 [System.Environment]::GetEnvironmentVariables('Machine').GetEnumerator() |
     Where-Object { $_.Key -match '(?i)^AWS_|^EC2_|^AMAZON_' } |
@@ -278,7 +289,7 @@ Add-Section "ENVIRONMENT VARIABLES (AWS)"
 $out -join "`n"
 '@
 
-# ── Linux scan script ─────────────────────────────────────────────────────────
+# -- Linux scan script --
 
 $linuxScan = @'
 #!/bin/bash
@@ -288,11 +299,11 @@ for svc in amazon-ssm-agent amazon-cloudwatch-agent codedeploy-agent aws-kinesis
     if systemctl is-active "$svc" &>/dev/null; then
         state=$(systemctl is-active "$svc")
         enabled=$(systemctl is-enabled "$svc" 2>/dev/null || echo unknown)
-        echo "  FOUND    $svc — active=$state enabled=$enabled"
+        echo "  FOUND    $svc - active=$state enabled=$enabled"
     elif systemctl list-units --all "$svc.service" 2>/dev/null | grep -q "$svc"; then
         state=$(systemctl is-active "$svc" 2>/dev/null || echo inactive)
         enabled=$(systemctl is-enabled "$svc" 2>/dev/null || echo disabled)
-        echo "  FOUND    $svc — active=$state enabled=$enabled"
+        echo "  FOUND    $svc - active=$state enabled=$enabled"
     else
         echo "  missing  $svc"
     fi
@@ -368,7 +379,7 @@ elif command -v dpkg &>/dev/null; then
 fi
 '@
 
-# ── Run scans ─────────────────────────────────────────────────────────────────
+# -- Run scans --
 
 $results = @{}
 
@@ -390,7 +401,7 @@ if ($lnxOnline) {
     Write-Host "  Status: $($lnxResult.Status)"
 }
 
-# ── Write reports ─────────────────────────────────────────────────────────────
+# -- Write reports --
 
 $reportBase = Join-Path $OutputDir "prescan-$timestamp"
 
@@ -414,12 +425,12 @@ $($r.Stderr)
     Write-Host "`nReport written: $txtFile" -ForegroundColor Green
 }
 
-# ── Print to console ───────────────────────────────────────────────────────────
+# -- Print to console --
 
 foreach ($os in $results.Keys) {
-    Write-Host "`n$('─' * 70)" -ForegroundColor DarkGray
+    Write-Host "`n$('--' * 70)" -ForegroundColor DarkGray
     Write-Host "  $os" -ForegroundColor Yellow
-    Write-Host "$('─' * 70)" -ForegroundColor DarkGray
+    Write-Host "$('--' * 70)" -ForegroundColor DarkGray
     $results[$os].Stdout -split "`n" | ForEach-Object {
         $color = if ($_ -match '^\s*FOUND') { 'Green' }
                  elseif ($_ -match '^\s*EXTRA') { 'Yellow' }
@@ -430,11 +441,11 @@ foreach ($os in $results.Keys) {
     }
 }
 
-# ── Gap analysis ──────────────────────────────────────────────────────────────
+# -- Gap analysis --
 
-Write-Host "`n$('═' * 70)" -ForegroundColor Cyan
+Write-Host "`n$('==' * 70)" -ForegroundColor Cyan
 Write-Host "  GAP ANALYSIS" -ForegroundColor Cyan
-Write-Host "$('═' * 70)" -ForegroundColor Cyan
+Write-Host "$('==' * 70)" -ForegroundColor Cyan
 Write-Host @"
 
 Compare the FOUND/missing lines above against what the cleanup scripts target:
@@ -442,8 +453,8 @@ Compare the FOUND/missing lines above against what the cleanup scripts target:
   Linux   : linux\invoke-aws-cleanup.sh
 
 Look for:
-  EXTRA  — component present on baseline AMI that cleanup script doesn't handle
-  missing — component not planted by UserData (may need to add to CFN template)
+  EXTRA  - component present on baseline AMI that cleanup script doesn't handle
+  missing - component not planted by UserData (may need to add to CFN template)
 
 If you see EXTRA components you want to clean up, open a brief investigation
 before adding them to the cleanup scripts.
