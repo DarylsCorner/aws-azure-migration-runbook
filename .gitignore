@@ -21,6 +21,7 @@ infra/aws/scan-reports/
 
 # Workload health-check snapshots
 infra/aws/workload-reports/
+infra/aws/appliance-vm.env
 
 # VS Code
 .vscode/settings.json
