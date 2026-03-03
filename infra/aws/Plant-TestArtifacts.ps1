@@ -244,6 +244,30 @@ try {
         }
     }
 
+    # ── App workload: IIS + non-AWS app config ────────────────────────────────
+    # IIS installs in ~30s on WS2022 (pre-staged).  The key under HKLM:\SOFTWARE\MyApp
+    # is intentionally non-AWS so we can assert it SURVIVES the cleanup run.
+
+    $lines.Add('if ((Get-WindowsFeature -Name Web-Server).InstallState -ne "Installed") {')
+    $lines.Add('    Install-WindowsFeature -Name Web-Server | Out-Null')
+    $lines.Add('    $planted += "Workload: IIS installed"')
+    $lines.Add('}')
+    $lines.Add('if (-not (Test-Path "HKLM:\SOFTWARE\MyApp\Config")) {')
+    $lines.Add('    New-Item -Path "HKLM:\SOFTWARE\MyApp\Config" -Force | Out-Null')
+    $lines.Add('    Set-ItemProperty -Path "HKLM:\SOFTWARE\MyApp\Config" -Name AppName     -Value MigTestApp                -Type String')
+    $lines.Add('    Set-ItemProperty -Path "HKLM:\SOFTWARE\MyApp\Config" -Name AppVersion  -Value 1.0.0                     -Type String')
+    $lines.Add('    Set-ItemProperty -Path "HKLM:\SOFTWARE\MyApp\Config" -Name AppEndpoint -Value http://myapp.internal/api  -Type String')
+    $lines.Add('    $planted += "Workload: AppConfig registry key"')
+    $lines.Add('}')
+    $lines.Add('$healthzDir = "C:\inetpub\wwwroot\healthz"')
+    $lines.Add('if (-not (Test-Path $healthzDir)) {')
+    $lines.Add('    New-Item -ItemType Directory -Path $healthzDir -Force | Out-Null')
+    $lines.Add('    Set-Content "$healthzDir\index.html" "{""status"":""ok"",""app"":""MigTestApp"",""check"":""pre-cleanup""}"')
+    $lines.Add('    $planted += "Workload: healthz page"')
+    $lines.Add('}')
+    $lines.Add('Set-Service  W3SVC -StartupType Automatic -ErrorAction SilentlyContinue')
+    $lines.Add('Start-Service W3SVC                       -ErrorAction SilentlyContinue')
+
     # ── Summary ───────────────────────────────────────────────────────────────
 
     $lines.Add('if ($planted.Count -eq 0) { Write-Host "WINDOWS: nothing to plant -- all artifacts already present." }')
@@ -333,6 +357,27 @@ function Build-LinuxPlantScript {
             $parts.Add("mkdir -p '$d' && planted+=('Dir: $d')")
         }
     }
+
+    # ── App workload: nginx + non-AWS app config ──────────────────────────────
+    # /etc/myapp/config.env is intentionally non-AWS so we can assert it
+    # SURVIVES the cleanup run while AWS credentials/dirs are removed.
+
+    $parts.Add('if ! command -v nginx >/dev/null 2>&1; then')
+    $parts.Add('  dnf install -y nginx >/dev/null 2>&1 || yum install -y nginx >/dev/null 2>&1')
+    $parts.Add('  planted+=("Workload: nginx installed")')
+    $parts.Add('fi')
+    $parts.Add('if [[ ! -f /etc/myapp/config.env ]]; then')
+    $parts.Add('  mkdir -p /etc/myapp')
+    $parts.Add('  printf "APP_NAME=MigTestApp\nAPP_VERSION=1.0.0\nAPP_ENDPOINT=http://myapp.internal/api\n" > /etc/myapp/config.env')
+    $parts.Add('  planted+=("Workload: /etc/myapp/config.env")')
+    $parts.Add('fi')
+    $parts.Add('mkdir -p /usr/share/nginx/html/healthz')
+    $parts.Add('[[ -f /usr/share/nginx/html/healthz/index.html ]] || {')
+    $parts.Add('  echo '''{"status":"ok","app":"MigTestApp","check":"pre-cleanup"}''' > /usr/share/nginx/html/healthz/index.html')
+    $parts.Add('  planted+=("Workload: healthz page")')
+    $parts.Add('}')
+    $parts.Add('systemctl enable nginx >/dev/null 2>&1')
+    $parts.Add('systemctl start  nginx >/dev/null 2>&1')
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
