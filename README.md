@@ -351,3 +351,12 @@ To add a new AWS component to the Windows cleanup:
 2. Add the corresponding `Check-Service` or `Check-InstalledProgram` call in `Invoke-MigrationReadiness.ps1`
 3. Test with `-DryRun` first
 4. Re-upload the updated scripts to the Storage Account blob container
+
+---
+
+## Known Limitations / Future Enhancements
+
+| # | Area | Description |
+|---|---|---|
+| 1 | **Database-hosting VMs** | VMs running databases may carry additional AWS artifacts not currently discovered or cleaned: RDS CA certificates (`C:\Program Files\Amazon\RDS\`, `/etc/ssl/certs/rds-ca-*.pem`), connection strings referencing `*.rds.amazonaws.com` / `*.cache.amazonaws.com` in app config files, S3-backed DB dump jobs in Task Scheduler or cron, Secrets Manager / SSM Parameter Store ARNs in config files, and the DMS replication agent. Plan: add a `-ScanDatabases` opt-in module to `Invoke-PreScan.ps1` and corresponding cleanup steps. |
+| 2 | **Scheduled task creation under SYSTEM** | `Plant-TestArtifacts.ps1` cannot create scheduled tasks via SSM (runs as SYSTEM, no SID mapping). Tasks must be planted via RDP or a domain-joined runner. Impact: scheduled task cleanup path is not exercised in the AWS test environment. |
