@@ -188,81 +188,12 @@ Resources:
       UserData:
         Fn::Base64: |
           <powershell>
-          # ── Wait for network ────────────────────────────────────────────────
-          $maxWait = 120
-          $waited  = 0
-          while (-not (Test-NetConnection -ComputerName 'google.com' -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue) -and $waited -lt $maxWait) {
-              Start-Sleep 5; $waited += 5
-          }
-
-          # ── Install AWS CloudWatch Agent ─────────────────────────────────────
-          $cwUrl  = 'https://s3.amazonaws.com/amazoncloudwatch-agent/windows/amd64/latest/amazon-cloudwatch-agent.msi'
-          $cwMsi  = "$env:TEMP\amazon-cloudwatch-agent.msi"
-          Invoke-WebRequest -Uri $cwUrl -OutFile $cwMsi -UseBasicParsing
-          Start-Process msiexec.exe -ArgumentList "/i `"$cwMsi`" /quiet /norestart" -Wait
-
-          # ── Install AWS CLI v2 ───────────────────────────────────────────────
-          $cliUrl = 'https://awscli.amazonaws.com/AWSCLIV2.msi'
-          $cliMsi = "$env:TEMP\AWSCLIV2.msi"
-          Invoke-WebRequest -Uri $cliUrl -OutFile $cliMsi -UseBasicParsing
-          Start-Process msiexec.exe -ArgumentList "/i `"$cliMsi`" /quiet /norestart" -Wait
-
-          # ── Fake AWS credentials for system accounts ─────────────────────────
-          $accounts = @('System', 'NetworkService', 'LocalService')
-          foreach ($acct in $accounts) {
-              $base = "C:\Windows\System32\config\systemprofile"
-              if ($acct -ne 'System') { $base = "C:\Windows\ServiceProfiles\$acct" }
-              $awsDir = "$base\.aws"
-              New-Item -ItemType Directory -Path $awsDir -Force | Out-Null
-              @"
-[default]
-# FAKE-CREDENTIAL — written by cfn-migration-test UserData for dirty-box testing
-aws_access_key_id     = AKIAIOSFODNN7FAKETEST
-aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYFAKETEST
-region = us-east-1
-"@ | Set-Content "$awsDir\credentials"
-          }
-          # Also for the default (Administrator) user profile
-          $adminCred = "C:\Users\Administrator\.aws"
-          New-Item -ItemType Directory -Path $adminCred -Force | Out-Null
-          Copy-Item "$env:SystemRoot\System32\config\systemprofile\.aws\credentials" "$adminCred\credentials" -Force
-
-          # ── EC2ConfigService registry hive ───────────────────────────────────
-          New-Item -Path 'HKLM:\SOFTWARE\Amazon\EC2ConfigService' -Force | Out-Null
-          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Amazon\EC2ConfigService' -Name 'Version' -Value '4.9.4222' -Type String
-
-          # ── EC2Launch v1 registry hive ───────────────────────────────────────
-          New-Item -Path 'HKLM:\SOFTWARE\Amazon\EC2Launch' -Force | Out-Null
-          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Amazon\EC2Launch' -Name 'Version' -Value '1.3.2003610' -Type String
-
-          # ── EC2Launch v2 / AmazonEC2Launch registry hive ────────────────────
-          New-Item -Path 'HKLM:\SOFTWARE\Amazon\EC2Launch\v2' -Force | Out-Null
-
-          # ── Hosts file — EC2 metadata entries ────────────────────────────────
-          $hostsFile = "$env:SystemRoot\System32\drivers\etc\hosts"
-          Add-Content $hostsFile "`n169.254.169.254  ec2.internal  # AWS EC2 metadata"
-          Add-Content $hostsFile "169.254.169.254  instance-data.ec2.internal  # AWS EC2 metadata"
-
-          # ── Scheduled tasks (placeholders) ───────────────────────────────────
-          $stParams = @(
-              @{ TaskName = '\Amazon EC2Launch - Instance Initialization';        Action = 'C:\Program Files\Amazon\EC2Launch\EC2Launch.exe' }
-              @{ TaskName = '\Amazon EC2Launch - TemporaryDesktopBackground';     Action = 'C:\Program Files\Amazon\EC2Launch\EC2Launch.exe' }
-              @{ TaskName = '\Amazon\AmazonCloudWatch\AmazonCloudWatchAutoUpdate'; Action = 'C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1' }
-              @{ TaskName = '\Amazon\Amazon SSM Agent Heartbeat';                 Action = 'C:\Program Files\Amazon\SSM\amazon-ssm-agent.exe' }
-          )
-          foreach ($st in $stParams) {
-              $folder = Split-Path $st.TaskName -Parent
-              $name   = Split-Path $st.TaskName -Leaf
-              $action = New-ScheduledTaskAction -Execute $st.Action
-              $trigger = New-ScheduledTaskTrigger -AtStartup
-              Register-ScheduledTask -TaskName $name -TaskPath $folder `
-                  -Action $action -Trigger $trigger -RunLevel Highest `
-                  -Force -ErrorAction SilentlyContinue | Out-Null
-          }
-
-          # ── Signal completion ─────────────────────────────────────────────────
-          $cfnSignal = 'C:\cfn-userdata-complete.txt'
-          "UserData completed: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Set-Content $cfnSignal
+          # Minimal UserData — only ensure SSM agent is running so we can
+          # reach the VM via SSM Run Command for the pre-scan and, later,
+          # the artifact-planting step.  Nothing is pre-seeded here.
+          $svc = Get-Service -Name 'AmazonSSMAgent' -ErrorAction SilentlyContinue
+          if ($svc -and $svc.Status -ne 'Running') { Start-Service AmazonSSMAgent }
+          "UserData complete: $(Get-Date -Format 'o')" | Set-Content 'C:\cfn-userdata-complete.txt'
           </powershell>
 
   # ── Amazon Linux 2023 instance ───────────────────────────────────────────────
@@ -282,77 +213,12 @@ region = us-east-1
       UserData:
         Fn::Base64: |
           #!/bin/bash
-          set -euo pipefail
+          # Minimal UserData — only ensure SSM agent is running so we can
+          # reach the VM via SSM Run Command for the pre-scan and, later,
+          # the artifact-planting step.  Nothing is pre-seeded here.
           exec > >(tee /var/log/cfn-userdata.log) 2>&1
-
-          echo "=== UserData start: $(date) ==="
-
-          # ── Ensure SSM agent is running ──────────────────────────────────────
           systemctl enable --now amazon-ssm-agent || true
-
-          # ── Install CloudWatch agent ─────────────────────────────────────────
-          dnf install -y amazon-cloudwatch-agent 2>/dev/null || \
-          rpm -U https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm || true
-          systemctl enable amazon-cloudwatch-agent || true
-          # Don't start — no config yet; the service existing is enough for cleanup test
-
-          # ── AWS CLI is pre-installed on AL2023; ensure it's v2 ───────────────
-          aws --version
-
-          # ── SSM directories ───────────────────────────────────────────────────
-          mkdir -p /etc/amazon/ssm
-          cat > /etc/amazon/ssm/seelog.xml <<'SEELOG'
-          <seelog type="adaptive" mininterval="200000000" maxinterval="1000000000" critmsgcount="500" minlevel="warn">
-              <exceptions><exception filepattern="test*" minlevel="error"/></exceptions>
-              <outputs formatid="fmtinfo"><console formatid="fmtinfo"/></outputs>
-              <formats><format id="fmtinfo" format="%EscM(32)%Msg%n"/></formats>
-          </seelog>
-          SEELOG
-
-          mkdir -p /var/lib/amazon/ssm/ipc
-          touch /var/lib/amazon/ssm/registration
-
-          # ── AWS credentials for root and ec2-user ─────────────────────────────
-          for HOME_DIR in /root /home/ec2-user; do
-              mkdir -p "$HOME_DIR/.aws"
-              cat > "$HOME_DIR/.aws/credentials" <<'CREDS'
-          [default]
-          # FAKE-CREDENTIAL — written by cfn-migration-test UserData for dirty-box testing
-          aws_access_key_id     = AKIAIOSFODNN7FAKETEST
-          aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYFAKETEST
-          CREDS
-              cat > "$HOME_DIR/.aws/config" <<'CFG'
-          [default]
-          region = us-east-1
-          output = json
-          CFG
-              chown -R $(stat -c '%U:%G' "$HOME_DIR") "$HOME_DIR/.aws" 2>/dev/null || true
-          done
-
-          # ── cloud-init: add EC2 datasource (mirrors real migrated source) ─────
-          CLOUD_CFG='/etc/cloud/cloud.cfg'
-          if [[ -f "$CLOUD_CFG" ]]; then
-              # Inject datasource_list only if not already present
-              if ! grep -qE '^[[:space:]]*datasource_list:' "$CLOUD_CFG"; then
-                  echo -e "\ndatasource_list: [ Ec2, None ]" >> "$CLOUD_CFG"
-              fi
-          fi
-
-          # ── /etc/hosts — EC2 metadata entries ────────────────────────────────
-          echo '169.254.169.254  instance-data.ec2.internal  # AWS EC2 metadata' >> /etc/hosts
-
-          # ── AWS agent config/data directories ────────────────────────────────
-          mkdir -p /etc/amazon/ssm /var/lib/amazon/ssm /var/log/amazon/ssm
-          mkdir -p /etc/amazon/cloudwatch /var/lib/amazon/cloudwatch
-
-          # ── AWS CodeDeploy agent directories ─────────────────────────────────
-          mkdir -p /etc/codedeploy-agent/conf
-          mkdir -p /opt/codedeploy-agent/deployment-root
-
-          # ── Kinesis agent config ──────────────────────────────────────────────
-          mkdir -p /etc/aws-kinesis
-
-          echo "=== UserData complete: $(date) ==="
+          echo "UserData complete: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Outputs
