@@ -50,22 +50,33 @@ if ([string]::IsNullOrWhiteSpace($Region)) {
     $Region = if ($envData.Region) { $envData.Region } else { 'us-east-1' }
 }
 
-if ([string]::IsNullOrWhiteSpace($ScanReportPath)) {
+$report = $null
+if (-not [string]::IsNullOrWhiteSpace($ScanReportPath)) {
+    $report = Get-Content $ScanReportPath -ErrorAction SilentlyContinue | ConvertFrom-Json
+} else {
+    # Try to find the latest JSON report (legacy format).  If only .txt reports
+    # exist (new format), that's fine -- we just plant everything unconditionally.
     $reportDir = Join-Path $PSScriptRoot 'scan-reports'
     $latest    = Get-ChildItem $reportDir -Filter 'pre-scan-*.json' -ErrorAction SilentlyContinue |
                      Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $latest) {
-        Write-Error "No pre-scan report found in $reportDir. Run Invoke-PreScan.ps1 first."
-        exit 1
+    if ($latest) {
+        $ScanReportPath = $latest.FullName
+        $report = Get-Content $ScanReportPath | ConvertFrom-Json
+        Write-Host "  Using scan report: $ScanReportPath"
+    } else {
+        $txtReport = Get-ChildItem $reportDir -Filter 'prescan-*-Windows.txt' -ErrorAction SilentlyContinue |
+                         Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($txtReport) {
+            Write-Host "  Scan report found (txt): $($txtReport.FullName)"
+            Write-Host "  (Planting all artifacts unconditionally -- txt reports are not parsed)" -ForegroundColor DarkGray
+        } else {
+            Write-Warning "No scan reports found in $reportDir -- planting all artifacts unconditionally."
+        }
     }
-    $ScanReportPath = $latest.FullName
 }
 
 Write-Host "`n=== Plant-TestArtifacts ===" -ForegroundColor Cyan
-Write-Host "  Scan report : $ScanReportPath"
 Write-Host "  Region      : $Region"
-
-$report = Get-Content $ScanReportPath | ConvertFrom-Json
 $winId  = $envData.WindowsInstanceId
 $lnxId  = $envData.LinuxInstanceId
 
@@ -80,7 +91,12 @@ function Send-SsmCommand {
     )
     Write-Host "`n  Planting on $Label ($InstanceId)..." -ForegroundColor Yellow
     $tmpFile = [System.IO.Path]::GetTempFileName() + '.json'
-    @{ commands = @($Script) } | ConvertTo-Json -Depth 3 | Set-Content $tmpFile
+    # Split into per-line array (ConvertTo-Json on a multiline string produces \r\n literals
+    # that SSM passes as a single mangled line).  Use BOM-free UTF-8 so AWS CLI Python parses it.
+    $scriptLines = @($Script -split "`r?`n")
+    $params = @{ commands = $scriptLines }
+    $json   = $params | ConvertTo-Json -Depth 5 -Compress
+    [System.IO.File]::WriteAllText($tmpFile, $json, [System.Text.UTF8Encoding]::new($false))
 
     $cmd = aws ssm send-command `
         --instance-ids $InstanceId `
@@ -97,16 +113,23 @@ function Send-SsmCommand {
     $deadline = (Get-Date).AddMinutes(5)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep 10
-        $inv = aws ssm get-command-invocation `
-                   --command-id $cmdId --instance-id $InstanceId `
-                   --region $Region --output json 2>$null | ConvertFrom-Json
-        if ($inv.Status -in @('Success','Failed','TimedOut','Cancelled')) {
-            $color = if ($inv.Status -eq 'Success') { 'Green' } else { 'Red' }
-            Write-Host " $($inv.Status)" -ForegroundColor $color
-            if ($inv.Status -ne 'Success' -and $inv.StandardErrorContent) {
-                Write-Warning $inv.StandardErrorContent
+        # Use --query to avoid deserializing potentially large JSON blobs
+        $status = aws ssm get-command-invocation `
+                      --command-id $cmdId --instance-id $InstanceId `
+                      --region $Region --query 'Status' --output text 2>$null
+        if ($status -in @('Success','Failed','TimedOut','Cancelled')) {
+            $color = if ($status -eq 'Success') { 'Green' } else { 'Red' }
+            Write-Host " $status" -ForegroundColor $color
+            if ($status -ne 'Success') {
+                $errOut = aws ssm get-command-invocation `
+                              --command-id $cmdId --instance-id $InstanceId `
+                              --region $Region --query 'StandardErrorContent' --output text 2>$null
+                if ($errOut) { Write-Warning $errOut }
             }
-            if ($inv.StandardOutputContent) { Write-Host $inv.StandardOutputContent }
+            $stdOut = aws ssm get-command-invocation `
+                          --command-id $cmdId --instance-id $InstanceId `
+                          --region $Region --query 'StandardOutputContent' --output text 2>$null
+            if ($stdOut) { Write-Host $stdOut }
             return
         }
         Write-Host '.' -NoNewline
@@ -223,7 +246,7 @@ try {
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
-    $lines.Add('if ($planted.Count -eq 0) { Write-Host "WINDOWS: nothing to plant — all artifacts already present." }')
+    $lines.Add('if ($planted.Count -eq 0) { Write-Host "WINDOWS: nothing to plant -- all artifacts already present." }')
     $lines.Add('else { $planted | ForEach-Object { Write-Host "  PLANTED: $_" } }')
 
     return $lines -join "`n"
@@ -251,7 +274,8 @@ function Build-LinuxPlantScript {
             $present = ($val -eq $true -or $val -eq 'True')
         }
         if (-not $present) {
-            $parts.Add("if [[ -d `"$(Split-Path $dir -Parent)`" ]]; then")
+            $parentDir = ($dir -replace '/[^/]+$', '')
+            $parts.Add("if [[ -d '$parentDir' ]]; then")
             $parts.Add("  mkdir -p '$dir'")
             $parts.Add("  cat > '$credFile' <<'CREDS'")
             $parts.Add("[default]")
@@ -313,7 +337,7 @@ function Build-LinuxPlantScript {
     # ── Summary ───────────────────────────────────────────────────────────────
 
     $parts.Add('if [[ ${#planted[@]} -eq 0 ]]; then')
-    $parts.Add('  echo "LINUX: nothing to plant — all artifacts already present."')
+    $parts.Add('  echo "LINUX: nothing to plant -- all artifacts already present."')
     $parts.Add('else')
     $parts.Add('  for item in "${planted[@]}"; do echo "  PLANTED: $item"; done')
     $parts.Add('fi')
@@ -324,10 +348,12 @@ function Build-LinuxPlantScript {
 # ── Execute ───────────────────────────────────────────────────────────────────
 
 Write-Host "`nBuilding Windows plant script from scan data..." -ForegroundColor Gray
-$winScript = Build-WindowsPlantScript -ScanData $report.Windows
+$winScanData = if ($report) { $report.Windows } else { $null }
+$winScript = Build-WindowsPlantScript -ScanData $winScanData
 
 Write-Host "Building Linux plant script from scan data..." -ForegroundColor Gray
-$lnxScript = Build-LinuxPlantScript -ScanData $report.Linux
+$lnxScanData = if ($report) { $report.Linux } else { $null }
+$lnxScript = Build-LinuxPlantScript -ScanData $lnxScanData
 
 # Show what will be planted
 Write-Host "`n--- Windows script preview ---" -ForegroundColor DarkGray
@@ -356,6 +382,6 @@ if (-not $NoVerify) {
     if (Test-Path $preScan) {
         & $preScan -Region $Region
     } else {
-        Write-Host "  (Invoke-PreScan.ps1 not found — skipping verification)"
+        Write-Host "  (Invoke-PreScan.ps1 not found -- skipping verification)"
     }
 }
