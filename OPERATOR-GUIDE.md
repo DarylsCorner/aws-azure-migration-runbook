@@ -11,7 +11,7 @@ This guide is written for the operator who will execute the migration, not the e
 
 | Requirement | How to verify |
 |---|---|
-| Azure Automation Account provisioned | `az automation account show -g rg-migration-test -n migration-automation` |
+| Azure Automation Account provisioned | `az automation account show -g rg-migration-test -n aa-migration-test` |
 | Automation Account has system-assigned Managed Identity | Check Identity tab in Azure Portal, or see README Setup section |
 | Managed Identity has `Virtual Machine Contributor` on the VM's resource group | `az role assignment list --assignee <mi-principal-id>` |
 | `az` CLI installed and logged in | `az account show` |
@@ -173,9 +173,11 @@ Review the dry-run, then run live:
 
 ---
 
-## Step 6 — Post-Cutover Validation (Windows)
+## Step 6 — Post-Cutover Validation
 
-For Windows VMs, run the readiness auditor to verify the VM is fully clean:
+Run the readiness auditor to verify the VM is fully clean.
+
+### Windows
 
 ```powershell
 # Run inside the VM or via Run Command
@@ -187,6 +189,20 @@ A passing post-audit shows:
 - All AWS credential directories: `NotFound`
 - Azure VM Agent: `Running`
 - No `Error` status items
+
+### Linux
+
+```bash
+# Run inside the VM or via Run Command
+sudo bash validation/invoke-migration-readiness.sh --mode post
+```
+
+A passing post-audit shows:
+- All AWS service and package checks: `NotFound`
+- All AWS credential directories: `NotFound`
+- Azure Linux Agent (`waagent`): `Pass` (active and enabled)
+- cloud-init datasource: Azure drop-in present, no Ec2 datasource
+- Exit code `0`
 
 ---
 
