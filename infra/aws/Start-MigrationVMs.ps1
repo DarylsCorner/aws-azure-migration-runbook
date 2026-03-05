@@ -21,9 +21,7 @@ $replInstanceId         = 'i-04bbc1a09463b00e3'
 $windowsSourceInstanceId = (aws ec2 describe-instances `
     --filters 'Name=private-ip-address,Values=10.10.1.17' `
     --query 'Reservations[0].Instances[0].InstanceId' --output text)
-$linuxSourceInstanceId  = (aws ec2 describe-instances `
-    --filters 'Name=private-ip-address,Values=10.10.1.64' `
-    --query 'Reservations[0].Instances[0].InstanceId' --output text)
+$linuxSourceInstanceId  = 'i-0e9f9043727774b18'
 
 $allIds = @($discoveryInstanceId, $replInstanceId, $windowsSourceInstanceId, $linuxSourceInstanceId)
 
@@ -63,7 +61,7 @@ Write-Host "Replication appliance RDP: $replPublicIp  |  Administrator / Mig1!Ik
 Write-Host ""
 Write-Host "Source VMs (private IPs unchanged):"
 Write-Host "  Windows : 10.10.1.17  |  Administrator / MigW1ndows!2026"
-Write-Host "  Linux   : 10.10.1.64  |  root / MigL1nux2026"
+Write-Host "  Linux   : 10.10.1.7  |  ubuntu / MigL1nux2026"
 Write-Host ""
 Write-Host "=== Next Steps ===" -ForegroundColor Cyan
 Write-Host "1. RDP to replication appliance: mstsc /v:$replPublicIp"
