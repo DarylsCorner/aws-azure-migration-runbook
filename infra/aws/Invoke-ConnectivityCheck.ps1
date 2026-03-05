@@ -13,11 +13,11 @@
     ┌────────────────────┬────────────────────────┬──────────────────────────┐
     │ Source             │ Destination            │ Ports                    │
     ├────────────────────┼────────────────────────┼──────────────────────────┤
-    │ Windows VM         │ Discovery appliance    │ 443                      │
     │ Windows VM         │ Replication appliance  │ 443, 9443, 44368         │
-    │ Linux VM           │ Discovery appliance    │ 443                      │
     │ Linux VM           │ Replication appliance  │ 443, 9443, 44368         │
     └────────────────────┴────────────────────────┴──────────────────────────┘
+    Note: The discovery appliance (Azure Migrate assessment) is NOT in the
+    required matrix — source VMs do not communicate with it directly.
 
     Port 44368 — Appliance Configuration Manager endpoint used by
     UnifiedAgentConfigurator.exe /CSType CSPrime to register the Mobility
@@ -162,7 +162,9 @@ function Build-ProbeMatrix {
         [string]         $ReplicationIp
     )
     $probes    = [System.Collections.ArrayList]::new()
-    $discPorts = @(443)
+    # The DISCOVERY appliance is used by Azure Migrate assessment; source VMs do
+    # NOT communicate with it directly.  No required ports to probe on that side.
+    $discPorts = @()
     $replPorts = @(443, 9443, 44368)
 
     foreach ($os in @('Windows', 'Linux')) {
