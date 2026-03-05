@@ -89,14 +89,17 @@ if ($AppSgId -and $AppSgId -ne 'None') {
         Write-Host "  Added RDP rule for $CallerCidr"
     }
 
-    # Ensure ports 9443 and 44368 are open from source VM subnet (idempotent — ignore duplicate error)
-    foreach ($p in @(9443, 44368)) {
+    # Ensure all required ASR ports are open from source VM subnet (idempotent — ignore duplicate error)
+    # 443   — HTTPS Mobility agent → appliance
+    # 9443  — replication data channel
+    # 44368 — Appliance Configuration Manager (agent registration)
+    foreach ($p in @(443, 9443, 44368)) {
         aws ec2 authorize-security-group-ingress `
             --group-id $AppSgId `
             --protocol tcp --port $p `
             --cidr '10.10.1.0/24' --output none 2>$null
     }
-    Write-Host "  Ensured ports 9443 (replication data) and 44368 (agent registration) open from 10.10.1.0/24"
+    Write-Host "  Ensured ports 443 (HTTPS), 9443 (replication data), 44368 (agent registration) open from 10.10.1.0/24"
 } else {
     Write-Host "  [create] sg-mig-appliance..."
     $AppSgId = aws ec2 create-security-group `
@@ -111,17 +114,18 @@ if ($AppSgId -and $AppSgId -ne 'None') {
         --cidr $CallerCidr --output none
     Write-Host "  Added RDP from $CallerCidr"
 
+    # Port 443   — HTTPS communication, Mobility agent → appliance.
     # Port 9443  — replication data channel (source VM → appliance).
     # Port 44368 — Appliance Configuration Manager endpoint.
-    # Source VMs must reach both ports on the appliance.
+    # Source VMs must reach all three ports on the appliance.
     # Without 44368 the configurator reports "Invalid source config file".
-    foreach ($p in @(9443, 44368)) {
+    foreach ($p in @(443, 9443, 44368)) {
         aws ec2 authorize-security-group-ingress `
             --group-id $AppSgId `
             --protocol tcp --port $p `
             --cidr '10.10.1.0/24' --output none
     }
-    Write-Host "  Added ports 9443 (replication data) and 44368 (agent registration) from 10.10.1.0/24"
+    Write-Host "  Added ports 443 (HTTPS), 9443 (replication data), 44368 (agent registration) from 10.10.1.0/24"
 }
 
 # ── UserData: download + extract DRInstaller zip ──────────────────────────────

@@ -221,8 +221,12 @@ function Invoke-ProbeGroup {
         $doc = 'AWS-RunShellScript'
     }
 
+    # SSM polling must wait for all probes to finish.
+    # Each TCP probe can take up to $TimeoutSec seconds; add 45s of headroom for
+    # SSM dispatch latency.  Never less than 90s.
+    $ssmPollingTimeoutSec = [Math]::Max(90, ($Probes.Count * $TimeoutSec) + 45)
     $ssmResult = Invoke-SsmProbeCommand -InstanceId $InstanceId -Region $Region `
-                     -DocumentName $doc -Commands $lines -TimeoutSec $TimeoutSec
+                     -DocumentName $doc -Commands $lines -TimeoutSec $ssmPollingTimeoutSec
 
     $out = [System.Collections.ArrayList]::new()
     foreach ($p in $Probes) {

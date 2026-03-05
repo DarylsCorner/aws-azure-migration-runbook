@@ -82,18 +82,33 @@ aws ssm send-command --instance-id i-0b5fb8a9552e16559 `
 
 ## 3. Source VMs → Replication Appliance Inbound (SG `sg-01b33115f80213aa1`)
 
-Source VMs must reach the appliance on ports **9443** and **44368**. Both are
-required — missing either one will break replication or agent registration.
+Source VMs must reach the appliance on ports **443**, **9443**, and **44368**.
+All three are required — missing any one will break HTTPS communication,
+replication, or agent registration.
 
 | Protocol | Port  | Purpose |
 |----------|-------|---------|
+| TCP | 443   | HTTPS — Mobility agent → appliance control channel |
 | TCP | 9443  | Replication data channel (source VM → appliance) |
 | TCP | 44368 | Appliance Configuration Manager — Mobility agent registration. Without this, `UnifiedAgentConfigurator.exe` reports "Invalid source config file provided" even when config.json is valid. |
 
 ```powershell
 $applianceSg = "sg-01b33115f80213aa1"  # appliance SG
+aws ec2 authorize-security-group-ingress --group-id $applianceSg --protocol tcp --port 443   --cidr 10.10.1.0/24
 aws ec2 authorize-security-group-ingress --group-id $applianceSg --protocol tcp --port 9443  --cidr 10.10.1.0/24
 aws ec2 authorize-security-group-ingress --group-id $applianceSg --protocol tcp --port 44368 --cidr 10.10.1.0/24
+```
+
+---
+
+## 3a. Source VMs → Discovery Appliance Inbound (SG `sg-04dc7bc0cf247d220`)
+
+Source VMs must also reach the discovery appliance on port **443** for the
+connectivity check to pass.
+
+```powershell
+$discoverySg = "sg-04dc7bc0cf247d220"  # discovery appliance SG
+aws ec2 authorize-security-group-ingress --group-id $discoverySg --protocol tcp --port 443 --cidr 10.10.1.0/24
 ```
 
 ---

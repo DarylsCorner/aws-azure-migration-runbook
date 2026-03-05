@@ -32,7 +32,8 @@
 param(
     [string] $Region         = '',
     [string] $ScanReportPath = '',
-    [switch] $NoVerify
+    [switch] $NoVerify,
+    [switch] $SkipWindows
 )
 
 Set-StrictMode -Version Latest
@@ -412,8 +413,12 @@ $lnxScript -split "`n" | Where-Object { $_ -match "planted\+=" } |
 $confirm = Read-Host "`nSend plant commands to both VMs? (yes/no)"
 if ($confirm -notmatch '^yes$') { Write-Host "Aborted."; exit 0 }
 
-Send-SsmCommand -InstanceId $winId -DocumentName 'AWS-RunPowerShellScript' `
-                -Script $winScript -Label 'Windows'
+if (-not $SkipWindows) {
+    Send-SsmCommand -InstanceId $winId -DocumentName 'AWS-RunPowerShellScript' `
+                    -Script $winScript -Label 'Windows'
+} else {
+    Write-Host "  Skipping Windows (--SkipWindows specified)." -ForegroundColor DarkGray
+}
 Send-SsmCommand -InstanceId $lnxId -DocumentName 'AWS-RunShellScript' `
                 -Script $lnxScript -Label 'Linux'
 
