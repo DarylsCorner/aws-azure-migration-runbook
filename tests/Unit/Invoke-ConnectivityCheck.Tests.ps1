@@ -131,7 +131,7 @@ Describe 'Build-ProbeMatrix' {
                 -DiscoveryIp   '' `
                 -ReplicationIp '10.10.0.178'
             $probes.Count | Should -Be 6
-            ($probes | Where-Object { $_.TargetIp -eq '' }).Count | Should -Be 0
+            @($probes | Where-Object { $_.TargetIp -eq '' }).Count | Should -Be 0
         }
     }
 
@@ -158,7 +158,7 @@ Describe 'Build-ProbeMatrix' {
                 -TestEnv       $envNoLinux `
                 -DiscoveryIp   '10.10.0.50' `
                 -ReplicationIp '10.10.0.178'
-            ($probes | Where-Object { $_.OS -eq 'Linux' }).Count | Should -Be 0
+            @($probes | Where-Object { $_.OS -eq 'Linux' }).Count | Should -Be 0
         }
     }
 }
