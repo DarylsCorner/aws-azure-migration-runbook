@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Migration test environment — provisions one Windows Server 2022 and one
-  Amazon Linux 2023 EC2 instance pre-loaded with AWS agents and artifacts so
+  Ubuntu 22.04 LTS EC2 instance pre-loaded with AWS agents and artifacts so
   that the Azure runbook cleanup can be exercised end-to-end after Azure
   Migrate cutover.
 
@@ -25,7 +25,7 @@ Parameters:
   LinuxInstanceType:
     Type: String
     Default: t3.small
-    Description: Instance type for the Amazon Linux 2023 VM.
+    Description: Instance type for the Ubuntu 22.04 LTS VM.
 
   # Resolved at deploy time from AWS SSM public parameter store — no hard-coded AMI IDs.
   WindowsAmiId:
@@ -34,7 +34,9 @@ Parameters:
 
   LinuxAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    # Ubuntu 22.04 LTS — explicitly supported by ASR Mobility Service 9.x.
+    # Amazon Linux 2023 is NOT supported by Azure Site Recovery.
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Resources
@@ -196,7 +198,9 @@ Resources:
           "UserData complete: $(Get-Date -Format 'o')" | Set-Content 'C:\cfn-userdata-complete.txt'
           </powershell>
 
-  # ── Amazon Linux 2023 instance ───────────────────────────────────────────────
+  # ── Ubuntu 22.04 LTS instance ──────────────────────────────────────────────
+  # NOTE: Amazon Linux 2023 is NOT supported by Azure Site Recovery.
+  # Use Ubuntu 22.04, RHEL 8/9, or CentOS 7/8 as the Linux source VM.
 
   LinuxInstance:
     Type: AWS::EC2::Instance
@@ -213,11 +217,12 @@ Resources:
       UserData:
         Fn::Base64: |
           #!/bin/bash
-          # Minimal UserData — only ensure SSM agent is running so we can
-          # reach the VM via SSM Run Command for the pre-scan and, later,
-          # the artifact-planting step.  Nothing is pre-seeded here.
+          # Minimal UserData — ensure SSM agent is running so we can reach the VM
+          # via SSM Run Command for the pre-scan and artifact-planting step.
           exec > >(tee /var/log/cfn-userdata.log) 2>&1
-          systemctl enable --now amazon-ssm-agent || true
+          # Install SSM agent on Ubuntu 22.04
+          snap install amazon-ssm-agent --classic || true
+          systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || true
           echo "UserData complete: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ──────────────────────────────────────────────────────────────────────────────

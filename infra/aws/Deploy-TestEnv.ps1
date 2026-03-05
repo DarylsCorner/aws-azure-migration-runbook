@@ -4,8 +4,8 @@
     Deploys the AWS migration test environment via CloudFormation.
 
 .DESCRIPTION
-    Creates stack 'mig-test-env' with one Windows Server 2022 and one Amazon
-    Linux 2023 EC2 instance pre-loaded with AWS agents and dirty-box artifacts.
+    Creates stack 'mig-test-env' with one Windows Server 2022 and one Ubuntu
+    22.04 LTS EC2 instance pre-loaded with AWS agents and dirty-box artifacts.
     Both instances use SSM for agent-based management (no key pair required).
 
 .PARAMETER StackName
@@ -194,15 +194,18 @@ Write-Host @"
   1. Wait ~2 min for UserData (agent installs) to finish.
      Check with: aws ssm describe-instance-information --region $Region
 
-  2. Set up Azure Migrate project if not already done:
+  2. Verify appliance connectivity (port reachability gate):
+     .\Invoke-ConnectivityCheck.ps1
+
+  3. Set up Azure Migrate project if not already done:
      https://portal.azure.com → Azure Migrate → Servers, databases and web apps
 
-  3. Install Azure Site Recovery Mobility service on each VM via SSM:
+  4. Install Azure Site Recovery Mobility service on each VM via SSM:
      .\Install-AzureMigrateAgent.ps1   (will be generated next)
 
-  4. Enable replication in Azure Migrate, wait for initial sync, then migrate.
+  5. Enable replication in Azure Migrate, wait for initial sync, then migrate.
 
-  5. After cutover, run the cleanup runbook:
+  6. After cutover, run the cleanup runbook:
      .\tests\Invoke-RunbookTest.ps1
 
 "@ -ForegroundColor Green

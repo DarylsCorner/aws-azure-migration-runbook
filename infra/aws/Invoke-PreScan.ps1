@@ -461,3 +461,12 @@ before adding them to the cleanup scripts.
 
 Reports saved to: $OutputDir
 "@ -ForegroundColor White
+# ── Connectivity check gate ───────────────────────────────────────────────────
+
+$checkScript = Join-Path $PSScriptRoot 'Invoke-ConnectivityCheck.ps1'
+if (Test-Path $checkScript) {
+    Write-Host "`n=== Running Connectivity Check (port reachability gate) ===" -ForegroundColor Cyan
+    & $checkScript -Region $Region
+} else {
+    Write-Warning "Invoke-ConnectivityCheck.ps1 not found — skipping connectivity gate."
+}
