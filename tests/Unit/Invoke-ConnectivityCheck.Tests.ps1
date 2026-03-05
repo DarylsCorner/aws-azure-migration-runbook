@@ -94,12 +94,13 @@ Describe 'Build-ProbeMatrix' {
     Context 'both appliances provided' {
         BeforeAll {
             $script:probes = Build-ProbeMatrix `
-                -TestEnv       $script:BaseEnv `
-                -DiscoveryIp   '10.10.0.50' `
-                -ReplicationIp '10.10.0.178'
+                -TestEnv                      $script:BaseEnv `
+                -DiscoveryIp                  '10.10.0.50' `
+                -DiscoveryApplianceInstanceId 'i-disc-001' `
+                -ReplicationIp                '10.10.0.178'
         }
 
-        It 'returns 8 probes (2 OS × (1 disc port + 3 repl ports))' {
+        It 'returns 8 probes (6 source→replication + 2 discovery-appliance→source)' {
             $script:probes.Count | Should -Be 8
         }
 
@@ -110,10 +111,21 @@ Describe 'Build-ProbeMatrix' {
             $match.Port     | Should -Be 44368
         }
 
-        It 'includes Linux → Discovery:443' {
-            $match = $script:probes | Where-Object { $_.Label -eq 'Linux → Discovery:443' }
+        It 'includes Discovery → Linux:22 with discovery appliance as the probing instance' {
+            $match = $script:probes | Where-Object { $_.Label -eq 'Discovery → Linux:22' }
             $match | Should -Not -BeNullOrEmpty
-            $match.TargetIp | Should -Be '10.10.0.50'
+            $match.TargetIp   | Should -Be '10.0.0.20'
+            $match.Port       | Should -Be 22
+            $match.InstanceId | Should -Be 'i-disc-001'
+            $match.OS         | Should -Be 'Windows'
+        }
+
+        It 'includes Discovery → Windows:5985 with discovery appliance as the probing instance' {
+            $match = $script:probes | Where-Object { $_.Label -eq 'Discovery → Windows:5985' }
+            $match | Should -Not -BeNullOrEmpty
+            $match.TargetIp   | Should -Be '10.0.0.10'
+            $match.Port       | Should -Be 5985
+            $match.InstanceId | Should -Be 'i-disc-001'
         }
 
         It 'all probes carry InstanceId and OS' {
@@ -136,12 +148,22 @@ Describe 'Build-ProbeMatrix' {
     }
 
     Context 'only discovery appliance provided' {
-        It 'returns 2 probes (2 OS × 1 disc port, no replication)' {
+        It 'returns 2 probes (Discovery→Windows:5985 + Discovery→Linux:22, no replication)' {
+            $probes = Build-ProbeMatrix `
+                -TestEnv                      $script:BaseEnv `
+                -DiscoveryIp                  '10.10.0.50' `
+                -DiscoveryApplianceInstanceId 'i-disc-001' `
+                -ReplicationIp                ''
+            $probes.Count | Should -Be 2
+            @($probes | Where-Object { $_.Label -like 'Discovery*' }).Count | Should -Be 2
+        }
+
+        It 'returns 0 probes when DiscoveryApplianceInstanceId is not provided' {
             $probes = Build-ProbeMatrix `
                 -TestEnv       $script:BaseEnv `
                 -DiscoveryIp   '10.10.0.50' `
                 -ReplicationIp ''
-            $probes.Count | Should -Be 2
+            @($probes).Count | Should -Be 0
         }
     }
 

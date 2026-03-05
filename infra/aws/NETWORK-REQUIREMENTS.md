@@ -29,16 +29,16 @@ foreach ($port in @(135, 445, 5985, 5986, 9443)) {
 }
 ```
 
-### Linux source VM (`10.10.1.64`, SG `sg-018c93c6ed949927a`)
+### Linux source VM (`10.10.1.64`, SG `sg-002b55db90da692b7`)
 
 | Protocol | Port(s) | Purpose |
-|----------|---------|---------|
+|----------|---------|----------|
 | TCP | 22 | SSH (mobility service push) |
 | TCP | 9443 | ASR mobility service data channel |
 
 ```powershell
 $cidr = "10.10.1.178/32"
-$sg   = "sg-018c93c6ed949927a"
+$sg   = "sg-002b55db90da692b7"
 foreach ($port in @(22, 9443)) {
     aws ec2 authorize-security-group-ingress --group-id $sg --protocol tcp --port $port --cidr $cidr
 }
@@ -101,15 +101,31 @@ aws ec2 authorize-security-group-ingress --group-id $applianceSg --protocol tcp 
 
 ---
 
-## 3a. Source VMs → Discovery Appliance Inbound (SG `sg-04dc7bc0cf247d220`)
+## 3a. Discovery Appliance → Source VMs (inbound on source VM SGs)
 
-Source VMs must also reach the discovery appliance on port **443** for the
-connectivity check to pass.
+The Azure Migrate discovery appliance (`10.10.1.192`) **polls source VMs** to
+gather server inventory before replication is enabled.  The appliance initiates
+the connection; source VMs must allow inbound on:
+
+| Protocol | Port | Target VM | Purpose |
+|----------|------|-----------|----------|
+| TCP | 22   | Linux VM  | SSH — discovery appliance inventories Linux servers over SSH |
+| TCP | 5985 | Windows VM | WinRM HTTP — discovery appliance inventories Windows servers over WinRM |
+
+Both VMs share SG `sg-002b55db90da692b7`:
 
 ```powershell
-$discoverySg = "sg-04dc7bc0cf247d220"  # discovery appliance SG
-aws ec2 authorize-security-group-ingress --group-id $discoverySg --protocol tcp --port 443 --cidr 10.10.1.0/24
+$sg      = "sg-002b55db90da692b7"  # source VM SG (both Windows and Linux)
+$discIp  = "10.10.1.192/32"        # discovery appliance private IP
+# Port 22  — discovery appliance → Linux VM SSH
+aws ec2 authorize-security-group-ingress --group-id $sg --protocol tcp --port 22   --cidr $discIp
+# Port 5985 — discovery appliance → Windows VM WinRM
+aws ec2 authorize-security-group-ingress --group-id $sg --protocol tcp --port 5985 --cidr $discIp
 ```
+
+> **Connectivity check:** The `Invoke-ConnectivityCheck.ps1` script validates
+> this direction by running `Test-NetConnection` **from** the discovery
+> appliance (via SSM) **to** each source VM on these ports.
 
 ---
 

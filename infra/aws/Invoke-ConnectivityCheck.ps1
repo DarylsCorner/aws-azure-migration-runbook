@@ -10,14 +10,17 @@
     any probe fails — suitable as a CI gate or pre-replication check.
 
     Required connectivity matrix:
-    ┌────────────────────┬────────────────────────┬──────────────────────────┐
-    │ Source             │ Destination            │ Ports                    │
-    ├────────────────────┼────────────────────────┼──────────────────────────┤
-    │ Windows VM         │ Replication appliance  │ 443, 9443, 44368         │
-    │ Linux VM           │ Replication appliance  │ 443, 9443, 44368         │
-    └────────────────────┴────────────────────────┴──────────────────────────┘
-    Note: The discovery appliance (Azure Migrate assessment) is NOT in the
-    required matrix — source VMs do not communicate with it directly.
+    ┌───────────────────────┬────────────────────────┬────────────────────────┐
+    │ Source                │ Destination            │ Ports                  │
+    ├───────────────────────┼────────────────────────┼────────────────────────┤
+    │ Windows VM            │ Replication appliance  │ 443, 9443, 44368       │
+    │ Linux VM              │ Replication appliance  │ 443, 9443, 44368       │
+    │ Discovery appliance   │ Windows VM             │ 5985 (WinRM)           │
+    │ Discovery appliance   │ Linux VM               │ 22 (SSH)               │
+    └───────────────────────┴────────────────────────┴────────────────────────┘
+    The discovery appliance POLLS source VMs for inventory (push model).
+    Probes for the discovery rows run FROM the discovery appliance via SSM
+    (it is a Windows VM with SSM agent online).
 
     Port 44368 — Appliance Configuration Manager endpoint used by
     UnifiedAgentConfigurator.exe /CSType CSPrime to register the Mobility
@@ -155,42 +158,64 @@ function Build-ProbeMatrix {
     <#
     .SYNOPSIS Returns the list of port-probe descriptors for both appliances.
     .OUTPUTS  Array of hashtables: @{ Label; InstanceId; OS; SourceIp; TargetIp; Port }
+
+    Probe directions:
+      • Source VMs → Replication appliance : 443, 9443, 44368 (run FROM source VMs)
+      • Discovery appliance → Source VMs  : 5985/Win, 22/Linux (run FROM discovery
+        appliance, which is a Windows VM with SSM online)
     #>
     param(
         [PSCustomObject] $TestEnv,
         [string]         $DiscoveryIp,
-        [string]         $ReplicationIp
+        [string]         $ReplicationIp,
+        [string]         $DiscoveryApplianceInstanceId = ''
     )
     $probes    = [System.Collections.ArrayList]::new()
-    # The DISCOVERY appliance is used by Azure Migrate assessment; source VMs do
-    # NOT communicate with it directly.  No required ports to probe on that side.
-    $discPorts = @()
     $replPorts = @(443, 9443, 44368)
 
+    # Source VMs → Replication appliance
     foreach ($os in @('Windows', 'Linux')) {
         $iid      = if ($os -eq 'Windows') { $TestEnv.WindowsInstanceId } else { $TestEnv.LinuxInstanceId }
         $sourceIp = if ($os -eq 'Windows') { $TestEnv.WindowsPrivateIp  } else { $TestEnv.LinuxPrivateIp  }
         if (-not $iid) { continue }
 
-        if ($DiscoveryIp) {
-            foreach ($port in $discPorts) {
-                $null = $probes.Add(@{
-                    Label     = "$os → Discovery:$port"
-                    InstanceId = $iid; OS = $os; SourceIp = $sourceIp
-                    TargetIp  = $DiscoveryIp; Port = $port
-                })
-            }
-        }
         if ($ReplicationIp) {
             foreach ($port in $replPorts) {
                 $null = $probes.Add(@{
-                    Label     = "$os → Replication:$port"
+                    Label      = "$os → Replication:$port"
                     InstanceId = $iid; OS = $os; SourceIp = $sourceIp
-                    TargetIp  = $ReplicationIp; Port = $port
+                    TargetIp   = $ReplicationIp; Port = $port
                 })
             }
         }
     }
+
+    # Discovery appliance → Source VMs (appliance polls source VMs for inventory)
+    # Probes run FROM the discovery appliance (Windows, SSM online) so it can
+    # verify it can reach each source VM on the required discovery port.
+    if ($DiscoveryApplianceInstanceId -and $DiscoveryIp) {
+        if ($TestEnv.WindowsInstanceId -and $TestEnv.WindowsPrivateIp) {
+            $null = $probes.Add(@{
+                Label      = 'Discovery → Windows:5985'
+                InstanceId = $DiscoveryApplianceInstanceId
+                OS         = 'Windows'   # discovery appliance is Windows
+                SourceIp   = $DiscoveryIp
+                TargetIp   = $TestEnv.WindowsPrivateIp
+                Port       = 5985
+            })
+        }
+        if ($TestEnv.LinuxInstanceId -and $TestEnv.LinuxPrivateIp) {
+            $null = $probes.Add(@{
+                Label      = 'Discovery → Linux:22'
+                InstanceId = $DiscoveryApplianceInstanceId
+                OS         = 'Windows'   # discovery appliance runs as Windows
+                SourceIp   = $DiscoveryIp
+                TargetIp   = $TestEnv.LinuxPrivateIp
+                Port       = 22
+            })
+        }
+    }
+
     return @($probes)
 }
 
@@ -316,8 +341,9 @@ function Invoke-ConnectivityCheckMain {
 
     # -- Build and run probes -------------------------------------------------
     $probes = Build-ProbeMatrix -TestEnv $testEnv `
-                  -DiscoveryIp $DiscoveryApplianceIp `
-                  -ReplicationIp $ReplicationApplianceIp
+                  -DiscoveryIp                  $DiscoveryApplianceIp `
+                  -ReplicationIp                $ReplicationApplianceIp `
+                  -DiscoveryApplianceInstanceId $DiscoveryApplianceInstanceId
 
     $groups = @{}
     foreach ($p in $probes) {

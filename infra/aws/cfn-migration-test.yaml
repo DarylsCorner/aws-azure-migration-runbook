@@ -17,6 +17,16 @@ Parameters:
       CIDR allowed inbound on RDP (3389) and SSH (22).
       Use your own public IP (x.x.x.x/32) for tighter security.
 
+  ApplianceCidr:
+    Type: String
+    Default: '10.10.1.0/24'
+    Description: >
+      CIDR of the Azure Migrate / replication appliance subnet.
+      Source VMs must accept inbound connections from appliances on discovery
+      ports (22 for Linux SSH, 5985 for Windows WinRM) and replication ports
+      (135, 445, 5985, 5986, 9443 for Windows; 22, 9443 for Linux).
+      Defaults to the /24 that contains both appliances (10.10.1.0/24).
+
   WindowsInstanceType:
     Type: String
     Default: t3.medium
@@ -117,6 +127,27 @@ Resources:
           ToPort: 9443
           CidrIp: '0.0.0.0/0'
           Description: ASR replication data channel
+        # Replication & discovery appliances need these ports to reach the Windows VM
+        - IpProtocol: tcp
+          FromPort: 135
+          ToPort: 135
+          CidrIp: !Ref ApplianceCidr
+          Description: RPC endpoint mapper (WMI push-install)
+        - IpProtocol: tcp
+          FromPort: 445
+          ToPort: 445
+          CidrIp: !Ref ApplianceCidr
+          Description: SMB (mobility service push)
+        - IpProtocol: tcp
+          FromPort: 5985
+          ToPort: 5985
+          CidrIp: !Ref ApplianceCidr
+          Description: WinRM HTTP (replication appliance + discovery)
+        - IpProtocol: tcp
+          FromPort: 5986
+          ToPort: 5986
+          CidrIp: !Ref ApplianceCidr
+          Description: WinRM HTTPS (replication appliance)
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: '0.0.0.0/0'
@@ -133,7 +164,12 @@ Resources:
           FromPort: 22
           ToPort: 22
           CidrIp: !Ref AllowCidr
-          Description: SSH
+          Description: SSH (admin access)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref ApplianceCidr
+          Description: SSH (discovery appliance inventory + replication appliance push)
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
