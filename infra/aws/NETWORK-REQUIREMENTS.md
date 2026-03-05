@@ -82,17 +82,17 @@ aws ssm send-command --instance-id i-0b5fb8a9552e16559 `
 
 ## 3. Source VMs → Replication Appliance Inbound (SG `sg-01b33115f80213aa1`)
 
-Source VMs must reach the appliance on port **44368** to register the Mobility
-Service agent. **This is the most commonly missed rule.** Without it,
-`UnifiedAgentConfigurator.exe` reports "Invalid source config file provided"
-even when the config.json is perfectly valid.
+Source VMs must reach the appliance on ports **9443** and **44368**. Both are
+required — missing either one will break replication or agent registration.
 
-| Protocol | Port | Purpose |
-|----------|------|---------|
-| TCP | 44368 | Appliance Configuration Manager — Mobility agent registration |
+| Protocol | Port  | Purpose |
+|----------|-------|---------|
+| TCP | 9443  | Replication data channel (source VM → appliance) |
+| TCP | 44368 | Appliance Configuration Manager — Mobility agent registration. Without this, `UnifiedAgentConfigurator.exe` reports "Invalid source config file provided" even when config.json is valid. |
 
 ```powershell
 $applianceSg = "sg-01b33115f80213aa1"  # appliance SG
+aws ec2 authorize-security-group-ingress --group-id $applianceSg --protocol tcp --port 9443  --cidr 10.10.1.0/24
 aws ec2 authorize-security-group-ingress --group-id $applianceSg --protocol tcp --port 44368 --cidr 10.10.1.0/24
 ```
 

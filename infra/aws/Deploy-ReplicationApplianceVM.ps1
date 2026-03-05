@@ -89,12 +89,14 @@ if ($AppSgId -and $AppSgId -ne 'None') {
         Write-Host "  Added RDP rule for $CallerCidr"
     }
 
-    # Ensure port 44368 is open from source VM subnet (idempotent — ignore duplicate error)
-    aws ec2 authorize-security-group-ingress `
-        --group-id $AppSgId `
-        --protocol tcp --port 44368 `
-        --cidr '10.10.1.0/24' --output none 2>$null
-    Write-Host "  Ensured port 44368 open from 10.10.1.0/24 (Mobility agent registration)"
+    # Ensure ports 9443 and 44368 are open from source VM subnet (idempotent — ignore duplicate error)
+    foreach ($p in @(9443, 44368)) {
+        aws ec2 authorize-security-group-ingress `
+            --group-id $AppSgId `
+            --protocol tcp --port $p `
+            --cidr '10.10.1.0/24' --output none 2>$null
+    }
+    Write-Host "  Ensured ports 9443 (replication data) and 44368 (agent registration) open from 10.10.1.0/24"
 } else {
     Write-Host "  [create] sg-mig-appliance..."
     $AppSgId = aws ec2 create-security-group `
@@ -109,16 +111,17 @@ if ($AppSgId -and $AppSgId -ne 'None') {
         --cidr $CallerCidr --output none
     Write-Host "  Added RDP from $CallerCidr"
 
+    # Port 9443  — replication data channel (source VM → appliance).
     # Port 44368 — Appliance Configuration Manager endpoint.
-    # Source VMs must reach this port on the appliance to register the
-    # Mobility Service agent (UnifiedAgentConfigurator.exe /CSType CSPrime).
-    # Without this rule the configurator reports "Invalid source config file"
-    # even when the config.json is perfectly valid.
-    aws ec2 authorize-security-group-ingress `
-        --group-id $AppSgId `
-        --protocol tcp --port 44368 `
-        --cidr '10.10.1.0/24' --output none
-    Write-Host "  Added port 44368 (Mobility agent registration) from 10.10.1.0/24"
+    # Source VMs must reach both ports on the appliance.
+    # Without 44368 the configurator reports "Invalid source config file".
+    foreach ($p in @(9443, 44368)) {
+        aws ec2 authorize-security-group-ingress `
+            --group-id $AppSgId `
+            --protocol tcp --port $p `
+            --cidr '10.10.1.0/24' --output none
+    }
+    Write-Host "  Added ports 9443 (replication data) and 44368 (agent registration) from 10.10.1.0/24"
 }
 
 # ── UserData: download + extract DRInstaller zip ──────────────────────────────
