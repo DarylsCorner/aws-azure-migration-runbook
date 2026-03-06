@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    In-guest migration readiness auditor — detects AWS components and validates
+    In-guest migration readiness auditor -- detects AWS components and validates
     Azure agent health. Run BEFORE and AFTER cleanup to track progress.
 
 .DESCRIPTION
@@ -10,9 +10,9 @@
     Does NOT make any changes. Safe to run at any time.
 
 .PARAMETER Mode
-    Pre  — discovery: report everything AWS-related found on the VM.
-    Post — verification: assert that AWS components are gone and Azure is healthy.
-    Both (default) — full report with pass/fail assertions.
+    Pre  -- discovery: report everything AWS-related found on the VM.
+    Post -- verification: assert that AWS components are gone and Azure is healthy.
+    Both (default) -- full report with pass/fail assertions.
 
 .PARAMETER ReportPath
     File path for the JSON output report.
@@ -35,15 +35,28 @@ param(
     [ValidateSet('Pre', 'Post', 'Both')]
     [string]$Mode = 'Both',
 
-    [string]$ReportPath = (Join-Path $PSScriptRoot "readiness-report_$(Get-Date -Format 'yyyyMMdd-HHmmss').json")
+    # TestMigration: MSI uninstalls are deferred; stopped/disabled services and
+    # installed software are acceptable -- they will be removed at Cutover.
+    # Cutover (default): everything must be gone.
+    [ValidateSet('TestMigration', 'Cutover')]
+    [string]$Phase = 'Cutover',
+
+    [string]$ReportPath = ''
 )
+
+# Resolve ReportPath default here (not in param block) so $PSScriptRoot empty-string
+# does not cause a binding failure when run via az vm run-command / Azure Automation.
+if (-not $ReportPath) {
+    $defaultDir = if ($PSScriptRoot) { $PSScriptRoot } else { $env:TEMP }
+    $ReportPath = Join-Path $defaultDir "readiness-report_$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Finding infrastructure
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $script:Findings = [System.Collections.Generic.List[hashtable]]::new()
 
 function Add-Finding {
@@ -77,21 +90,30 @@ function Write-FindingLine {
     }
     Write-Host "$icon $($f.Category) / $($f.Name)$(if ($f.Detail) { ": $($f.Detail)" })"
     if ($f.Recommendation) {
-        Write-Host "          → $($f.Recommendation)"
+        Write-Host "          -> $($f.Recommendation)"
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Check helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Check-Service {
     param([string]$ServiceName, [string]$FriendlyName, [string]$Category = 'Services')
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($svc) {
-        Add-Finding -Category $Category -Name $FriendlyName `
-            -Status Found `
-            -Detail "Status=$($svc.Status) StartType=$($svc.StartType)" `
-            -Recommendation "Stop and disable service '$ServiceName', then uninstall on Cutover"
+        $isMitigated = ($Phase -eq 'TestMigration') -and
+                       ($svc.Status -in 'Stopped','StopPending') -and
+                       ($svc.StartType -in 'Disabled','Manual')
+        if ($isMitigated) {
+            Add-Finding -Category $Category -Name $FriendlyName `
+                -Status Info `
+                -Detail "Status=$($svc.Status) StartType=$($svc.StartType) -- stopped/disabled, MSI uninstall deferred to Cutover"
+        } else {
+            Add-Finding -Category $Category -Name $FriendlyName `
+                -Status Found `
+                -Detail "Status=$($svc.Status) StartType=$($svc.StartType)" `
+                -Recommendation "Stop and disable service '$ServiceName', then uninstall on Cutover"
+        }
     } else {
         Add-Finding -Category $Category -Name $FriendlyName -Status NotFound
     }
@@ -112,10 +134,16 @@ function Check-InstalledProgram {
     } | Select-Object -First 1
 
     if ($entry) {
-        Add-Finding -Category $Category -Name $FriendlyName `
-            -Status Found `
-            -Detail "$($entry.DisplayName) v$($entry.DisplayVersion)" `
-            -Recommendation "Uninstall during Cutover phase"
+        if ($Phase -eq 'TestMigration') {
+            Add-Finding -Category $Category -Name $FriendlyName `
+                -Status Info `
+                -Detail "$($entry.DisplayName) v$($entry.DisplayVersion) -- present, uninstall deferred to Cutover"
+        } else {
+            Add-Finding -Category $Category -Name $FriendlyName `
+                -Status Found `
+                -Detail "$($entry.DisplayName) v$($entry.DisplayVersion)" `
+                -Recommendation "Uninstall during Cutover phase"
+        }
     } else {
         Add-Finding -Category $Category -Name $FriendlyName -Status NotFound
     }
@@ -137,9 +165,14 @@ function Check-DirectoryExists {
     if (Test-Path $Path) {
         $sz = (Get-ChildItem $Path -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
         $szKb = [math]::Round(($sz / 1KB), 1)
-        Add-Finding -Category $Category -Name $FriendlyName `
-            -Status Found -Detail "Path: $Path  Size: ${szKb} KB" `
-            -Recommendation "Remove directory"
+        if ($Phase -eq 'TestMigration') {
+            Add-Finding -Category $Category -Name $FriendlyName `
+                -Status Info -Detail "Path: $Path  Size: ${szKb} KB -- present, removal deferred to Cutover"
+        } else {
+            Add-Finding -Category $Category -Name $FriendlyName `
+                -Status Found -Detail "Path: $Path  Size: ${szKb} KB" `
+                -Recommendation "Remove directory"
+        }
     } else {
         Add-Finding -Category $Category -Name $FriendlyName -Status NotFound
     }
@@ -216,7 +249,7 @@ function Check-AzureAgent {
 }
 
 function Check-IMDSReachable {
-    # Azure IMDS — check that it responds with Azure metadata (not AWS)
+    # Azure IMDS -- check that it responds with Azure metadata (not AWS)
     try {
         $resp = Invoke-RestMethod `
             -Uri 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' `
@@ -233,7 +266,7 @@ function Check-IMDSReachable {
             $prov = if ($resp.compute -and $resp.compute.PSObject.Properties['provider']) { $resp.compute.provider } else { '(unknown)' }
             Add-Finding -Category 'Azure IMDS' -Name 'IMDS endpoint' `
                 -Status Warning `
-                -Detail "IMDS responded but provider is '$prov' — expected 'Microsoft.Compute'"
+                -Detail "IMDS responded but provider is '$prov' -- expected 'Microsoft.Compute'"
         }
     } catch {
         Add-Finding -Category 'Azure IMDS' -Name 'IMDS endpoint' `
@@ -243,9 +276,9 @@ function Check-IMDSReachable {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Also scan Amazon-prefixed task folders dynamically
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Scan-AmazonScheduledTasks {
     $amazonTasks = Get-ScheduledTask -TaskPath '\Amazon\*' -ErrorAction SilentlyContinue
     if ($amazonTasks) {
@@ -258,19 +291,20 @@ function Scan-AmazonScheduledTasks {
     }
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # Run all checks
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 Write-Host ""
-Write-Host "════════════════════════════════════════════════"
-Write-Host " AWS → Azure Migration Readiness Check"
+Write-Host "================================================"
+Write-Host " AWS -> Azure Migration Readiness Check"
 Write-Host " Mode    : $Mode"
+Write-Host " Phase   : $Phase"
 Write-Host " Host    : $env:COMPUTERNAME"
 Write-Host " Time    : $(Get-Date -Format 'u')"
-Write-Host "════════════════════════════════════════════════"
+Write-Host "================================================"
 Write-Host ""
 
-# ── Services ─────────────────────────────────────────────────────────────────
+# -- Services -----------------------------------------------------------------
 Write-Host "--- Services ---"
 Check-Service 'AmazonSSMAgent'        'AWS SSM Agent'
 Check-Service 'AmazonCloudWatchAgent' 'AWS CloudWatch Agent'
@@ -281,7 +315,7 @@ Check-Service 'KinesisAgent'          'AWS Kinesis Agent'
 Check-Service 'AWSNitroEnclaves'      'AWS Nitro Enclaves'
 Check-Service 'AWSCodeDeployAgent'    'AWS CodeDeploy Agent'
 
-# ── Installed Software ────────────────────────────────────────────────────────
+# -- Installed Software --------------------------------------------------------
 Write-Host "--- Installed Software ---"
 Check-InstalledProgram 'Amazon SSM Agent*'            'AWS SSM Agent'
 Check-InstalledProgram 'Amazon CloudWatch Agent*'     'AWS CloudWatch Agent'
@@ -292,7 +326,7 @@ Check-InstalledProgram 'AWS CodeDeploy Agent*'        'AWS CodeDeploy Agent'
 Check-InstalledProgram 'AWS Command Line Interface*'  'AWS CLI'
 Check-InstalledProgram 'Amazon Web Services*'         'Amazon Web Services (generic)'
 
-# ── Registry ─────────────────────────────────────────────────────────────────
+# -- Registry -----------------------------------------------------------------
 Write-Host "--- Registry ---"
 Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\EC2ConfigService' 'EC2ConfigService registry hive'
 Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\EC2Launch'        'EC2Launch v1 registry hive'
@@ -300,7 +334,7 @@ Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\EC2LaunchV2'      'EC2Launch v2 registr
 Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\AmazonCloudWatchAgent' 'CloudWatch Agent registry hive'
 Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\SSM'              'SSM Agent registry hive'
 
-# ── Filesystem ────────────────────────────────────────────────────────────────
+# -- Filesystem ----------------------------------------------------------------
 Write-Host "--- Filesystem ---"
 Check-DirectoryExists 'C:\Program Files\Amazon\SSM'                'SSM Agent binaries'
 Check-DirectoryExists 'C:\Program Files\Amazon\AmazonCloudWatchAgent' 'CloudWatch Agent binaries'
@@ -308,7 +342,7 @@ Check-DirectoryExists 'C:\Program Files\Amazon\EC2ConfigService'   'EC2Config bi
 Check-DirectoryExists "$env:SystemRoot\system32\config\systemprofile\.aws" 'SYSTEM .aws credentials'
 Check-DirectoryExists "$env:SystemRoot\ServiceProfiles\NetworkService\.aws" 'NetworkService .aws credentials'
 
-# ── Environment Variables ─────────────────────────────────────────────────────
+# -- Environment Variables -----------------------------------------------------
 Write-Host "--- Environment Variables ---"
 foreach ($v in @(
     'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
@@ -318,31 +352,32 @@ foreach ($v in @(
     Check-MachineEnvVar $v
 }
 
-# ── Hosts File ────────────────────────────────────────────────────────────────
+# -- Hosts File ----------------------------------------------------------------
 Write-Host "--- Hosts File ---"
 Check-HostsEntry '169\.254\.169\.254.*ec2\.internal' 'AWS EC2-internal metadata hostname'
 Check-HostsEntry 'instance-data\.ec2\.internal'      'AWS instance-data hostname'
 
-# ── Scheduled Tasks ───────────────────────────────────────────────────────────
+# -- Scheduled Tasks -----------------------------------------------------------
 Write-Host "--- Scheduled Tasks ---"
 Check-ScheduledTask 'Amazon EC2Launch - Instance Initialization'
 Check-ScheduledTask 'AmazonCloudWatchAutoUpdate' '\Amazon\AmazonCloudWatch\'
 Scan-AmazonScheduledTasks
 
-# ── Azure Agent & IMDS ────────────────────────────────────────────────────────
+# -- Azure Agent & IMDS --------------------------------------------------------
 Write-Host "--- Azure Agent & IMDS ---"
 Check-AzureAgent
 Check-IMDSReachable
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Post mode: assert clean state
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $postModeAssertions = [System.Collections.Generic.List[hashtable]]::new()
 
 if ($Mode -in 'Post', 'Both') {
     Write-Host ""
     Write-Host "--- Post-Cleanup Assertions ---"
 
+    # In TestMigration phase, Info-status items are intentionally deferred -- do not count as failures.
     $foundItems = @($script:Findings | Where-Object {
         $_.Status -eq 'Found' -and $_.Category -ne 'Azure Agent' -and $_.Category -ne 'Azure IMDS'
     })
@@ -363,7 +398,7 @@ if ($Mode -in 'Post', 'Both') {
         foreach ($fi in $failItems) {
             Write-Host "[FAIL   ] $($fi.Category) / $($fi.Name): $($fi.Detail)"
             if ($fi.Recommendation) {
-                Write-Host "          → $($fi.Recommendation)"
+                Write-Host "          -> $($fi.Recommendation)"
             }
         }
     }
@@ -375,9 +410,9 @@ if ($Mode -in 'Post', 'Both') {
     }) | Out-Null
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Summary
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $counts = @{
     Found    = @($script:Findings | Where-Object Status -eq 'Found').Count
     NotFound = @($script:Findings | Where-Object Status -eq 'NotFound').Count
@@ -388,22 +423,23 @@ $counts = @{
 }
 
 Write-Host ""
-Write-Host "════════════ Summary ════════════"
+Write-Host "============ Summary ============"
 Write-Host "  Found AWS components : $($counts.Found)"
 Write-Host "  Clean (not found)    : $($counts.NotFound)"
 Write-Host "  Azure checks passed  : $($counts.Pass)"
 Write-Host "  Azure checks failed  : $($counts.Fail)"
 Write-Host "  Warnings             : $($counts.Warning)"
-Write-Host "═════════════════════════════════"
+Write-Host "================================="
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Write JSON report
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $report = @{
     SchemaVersion    = '1.0'
     Timestamp        = (Get-Date -Format 'o')
     ComputerName     = $env:COMPUTERNAME
     Mode             = $Mode
+    Phase            = $Phase
     Findings         = $script:Findings
     Summary          = $counts
     PostAssertions   = if ($postModeAssertions.Count -gt 0) { $postModeAssertions[0] } else { $null }

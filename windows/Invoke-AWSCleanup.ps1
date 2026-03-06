@@ -44,15 +44,22 @@ param(
 
     [switch]$SkipAzureAgentCheck,
 
-    [string]$ReportPath = (Join-Path $PSScriptRoot "aws-cleanup-report_$(Get-Date -Format 'yyyyMMdd-HHmmss').json")
+    [string]$ReportPath = ''
 )
+
+# Resolve ReportPath default here (not in param block) so $PSScriptRoot empty-string
+# does not cause a binding failure when run via az vm run-command / Azure Automation.
+if (-not $ReportPath) {
+    $defaultDir = if ($PSScriptRoot) { $PSScriptRoot } else { $env:TEMP }
+    $ReportPath = Join-Path $defaultDir "aws-cleanup-report_$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'   # Non-fatal: log and keep going
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Logging & report infrastructure
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $script:Actions = [System.Collections.Generic.List[hashtable]]::new()
 
 function Write-Log {
@@ -79,9 +86,9 @@ function Add-ActionResult {
     Write-Log "[$Status] $Name$(if ($Detail) { " - $Detail" })" -Level $level
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Helper: stop + disable a Windows service (idempotent)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Disable-ServiceIfPresent {
     param([string]$ServiceName, [string]$FriendlyName)
 
@@ -108,9 +115,9 @@ function Disable-ServiceIfPresent {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Helper: uninstall an MSI product by display name pattern (idempotent)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Uninstall-ProgramIfPresent {
     param(
         [string]$DisplayNamePattern,
@@ -153,9 +160,9 @@ function Uninstall-ProgramIfPresent {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Helper: remove a registry key tree (idempotent)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Remove-RegistryKeyIfPresent {
     param([string]$KeyPath, [string]$FriendlyName)
 
@@ -177,9 +184,9 @@ function Remove-RegistryKeyIfPresent {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Helper: remove a directory (idempotent)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Remove-DirectoryIfPresent {
     param([string]$DirectoryPath, [string]$FriendlyName)
 
@@ -202,9 +209,9 @@ function Remove-DirectoryIfPresent {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Helper: remove a scheduled task (idempotent)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Remove-ScheduledTaskIfPresent {
     param([string]$TaskName, [string]$TaskPath = '\')
 
@@ -227,9 +234,9 @@ function Remove-ScheduledTaskIfPresent {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Helper: remove lines from hosts file matching a pattern (idempotent)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Remove-HostsEntryIfPresent {
     param([string]$Pattern, [string]$FriendlyName)
 
@@ -257,9 +264,9 @@ function Remove-HostsEntryIfPresent {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Helper: clear a system-wide or machine environment variable (idempotent)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Remove-MachineEnvVarIfPresent {
     param([string]$VariableName)
 
@@ -282,9 +289,9 @@ function Remove-MachineEnvVarIfPresent {
     }
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — Pre-flight
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# SECTION 1 -- Pre-flight
+# =============================================================================
 Write-Log "================================================"
 Write-Log " AWS -> Azure In-Guest Cleanup (Windows)"
 Write-Log " Phase   : $Phase"
@@ -297,9 +304,9 @@ if ($DryRun) {
     Write-Log "DRY-RUN MODE - no changes will be made" -Level WARN
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — Stop and disable AWS services (TestMigration + Cutover)
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# SECTION 2 -- Stop and disable AWS services (TestMigration + Cutover)
+# =============================================================================
 Write-Log "--- Section 2: AWS Services ---"
 
 $awsServices = @(
@@ -317,12 +324,12 @@ foreach ($svc in $awsServices) {
     Disable-ServiceIfPresent -ServiceName $svc.Name -FriendlyName $svc.Friendly
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — Credential and profile cleanup (TestMigration + Cutover)
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# SECTION 3 -- Credential and profile cleanup (TestMigration + Cutover)
+# =============================================================================
 Write-Log "--- Section 3: AWS Credentials & Profiles ---"
 
-# Machine-scope credential environment variables — never appropriate post-migration
+# Machine-scope credential environment variables -- never appropriate post-migration
 $awsEnvVars = @(
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -340,7 +347,7 @@ foreach ($v in $awsEnvVars) {
 }
 
 # Shared-profile credentials under the system/service accounts that ran EC2 workloads.
-# We target SYSTEM and the default profile only — user home dirs are intentionally
+# We target SYSTEM and the default profile only -- user home dirs are intentionally
 # left for application owners to review before cutover.
 $systemAwsDir = Join-Path $env:SystemRoot 'system32\config\systemprofile\.aws'
 Remove-DirectoryIfPresent -DirectoryPath $systemAwsDir -FriendlyName 'SYSTEM account .aws credentials'
@@ -351,9 +358,9 @@ Remove-DirectoryIfPresent -DirectoryPath $networkServiceAwsDir -FriendlyName 'Ne
 $localServiceAwsDir = Join-Path $env:SystemRoot 'ServiceProfiles\LocalService\.aws'
 Remove-DirectoryIfPresent -DirectoryPath $localServiceAwsDir -FriendlyName 'LocalService .aws credentials'
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 4 — Hosts file: AWS metadata endpoint (TestMigration + Cutover)
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# SECTION 4 -- Hosts file: AWS metadata endpoint (TestMigration + Cutover)
+# =============================================================================
 Write-Log "--- Section 4: Hosts File ---"
 
 # 169.254.169.254 is the AWS (and Azure) IMDS address.
@@ -365,9 +372,9 @@ Remove-HostsEntryIfPresent -Pattern '169\.254\.169\.254.*ec2\.internal' `
 Remove-HostsEntryIfPresent -Pattern 'instance-data\.ec2\.internal' `
     -FriendlyName 'AWS instance-data hostname'
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 5 — AWS Scheduled Tasks (TestMigration + Cutover)
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# SECTION 5 -- AWS Scheduled Tasks (TestMigration + Cutover)
+# =============================================================================
 Write-Log "--- Section 5: Scheduled Tasks ---"
 
 $awsTasks = @(
@@ -393,12 +400,12 @@ if ($amazonTaskFolder) {
     }
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — Registry cleanup (TestMigration + Cutover)
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# SECTION 6 -- Registry cleanup (TestMigration + Cutover)
+# =============================================================================
 Write-Log "--- Section 6: Registry ---"
 
-# EC2Config / EC2Launch user-data execution markers — prevents re-execution.
+# EC2Config / EC2Launch user-data execution markers -- prevents re-execution.
 # Safe to remove; they will not be written again as no EC2 service is running.
 Remove-RegistryKeyIfPresent `
     -KeyPath 'HKLM:\SOFTWARE\Amazon\EC2ConfigService' `
@@ -420,13 +427,13 @@ Remove-RegistryKeyIfPresent `
     -KeyPath 'HKLM:\SOFTWARE\Amazon\SSM' `
     -FriendlyName 'SSM Agent registry hive'
 
-# Retain: HKLM:\SOFTWARE\Amazon\PVDriver — driver registry; do not remove.
+# Retain: HKLM:\SOFTWARE\Amazon\PVDriver -- driver registry; do not remove.
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 7 — Cutover-only: MSI uninstalls
+# =============================================================================
+# SECTION 7 -- Cutover-only: MSI uninstalls
 # Only runs during Cutover phase. TestMigration leaves binaries in place so
 # the machine can roll back cleanly via Azure Migrate test-failover revert.
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 if ($Phase -eq 'Cutover') {
     Write-Log "--- Section 7: Cutover-only MSI Uninstalls ---"
 
@@ -448,7 +455,7 @@ if ($Phase -eq 'Cutover') {
     Uninstall-ProgramIfPresent -DisplayNamePattern 'AWS CodeDeploy Agent*' `
         -FriendlyName 'AWS CodeDeploy Agent'
 
-    # AWS CLI — only uninstall if explicitly understood; apps may call 'aws' commands.
+    # AWS CLI -- only uninstall if explicitly understood; apps may call 'aws' commands.
     # This is flagged as informational. Uncomment to enable.
     # Uninstall-ProgramIfPresent -DisplayNamePattern 'AWS Command Line Interface*' `
     #     -FriendlyName 'AWS CLI'
@@ -469,9 +476,9 @@ if ($Phase -eq 'Cutover') {
         -Detail 'Deferred to Cutover phase to preserve rollback capability'
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 8 — Azure VM Agent verification
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# SECTION 8 -- Azure VM Agent verification
+# =============================================================================
 Write-Log "--- Section 8: Azure VM Agent ---"
 
 if ($SkipAzureAgentCheck) {
@@ -496,15 +503,15 @@ if ($SkipAzureAgentCheck) {
                 -Detail "Agent exists but status is '$($waagent.Status)' - would start and set to Automatic"
         }
     } else {
-        # Agent is running — no action needed. Always Skipped (no change required).
+        # Agent is running -- no action needed. Always Skipped (no change required).
         Add-ActionResult -Name 'Azure VM Agent Check' -Status Skipped `
             -Detail "WindowsAzureGuestAgent is Running (StartType: $($waagent.StartType))"
     }
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 9 — Report
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# SECTION 9 -- Report
+# =============================================================================
 $summary = @{
     Total     = $script:Actions.Count
     Completed = @($script:Actions | Where-Object Status -eq 'Completed').Count
