@@ -1,0 +1,65 @@
+{
+  "meta": {
+    "capturedAt": "2026-03-12",
+    "instanceId": "i-090e995e6a6c9664d",
+    "instanceName": "mig-test-win",
+    "privateIp": "10.10.1.17",
+    "os": "Windows Server 2022 Datacenter",
+    "phase": "pre-plant-baseline",
+    "description": "Real AWS artifacts present on source EC2 before dirty-box plant and before replication re-enabled. Used as comparison target after cutover-phase cleanup."
+  },
+  "services": [
+    { "name": "AmazonSSMAgent",        "status": "Running", "startType": "Automatic", "expectRemovedBy": "Cutover" },
+    { "name": "AWSLiteAgent",          "status": "Stopped", "startType": "Automatic", "expectRemovedBy": "Cutover" },
+    { "name": "AmazonCloudWatchAgent", "status": null,      "startType": null,        "expectRemovedBy": null,     "note": "ABSENT — not installed" },
+    { "name": "AWSCodeDeployAgent",    "status": null,      "startType": null,        "expectRemovedBy": null,     "note": "ABSENT — not installed" },
+    { "name": "Ec2Config",             "status": null,      "startType": null,        "expectRemovedBy": null,     "note": "ABSENT — not installed" }
+  ],
+  "registry": [
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2ConfigService",       "present": true,  "expectRemovedBy": "Cutover" },
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2Launch",              "present": true,  "expectRemovedBy": "Cutover" },
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2LaunchV2",            "present": false, "expectRemovedBy": null },
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\AmazonCloudWatchAgent",  "present": false, "expectRemovedBy": null },
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\SSM",                    "present": false, "expectRemovedBy": null }
+  ],
+  "installedSoftware": [
+    { "displayName": "Amazon SSM Agent",    "expectRemovedBy": "Cutover" },
+    { "displayName": "aws-cfn-bootstrap",   "expectRemovedBy": "Cutover" },
+    { "displayName": "Amazon EC2Launch",    "expectRemovedBy": "Cutover" },
+    { "displayName": "AWS PV Drivers",      "expectRemovedBy": "DO NOT REMOVE", "note": "Boot-critical paravirtual drivers — Azure Migrate replaces during replication. Cleanup script intentionally skips these." }
+  ],
+  "environmentVariables": [
+    { "name": "AWS_DEFAULT_REGION",    "present": false },
+    { "name": "AWS_REGION",            "present": false },
+    { "name": "AWS_PROFILE",           "present": false },
+    { "name": "AWS_ACCESS_KEY_ID",     "present": false },
+    { "name": "AWS_SECRET_ACCESS_KEY", "present": false },
+    { "name": "AWS_CONFIG_FILE",       "present": false }
+  ],
+  "scheduledTasks": [],
+  "directories": [
+    { "path": "C:\\Program Files\\Amazon",       "present": true,  "expectRemovedBy": "Cutover" },
+    { "path": "C:\\Program Files (x86)\\Amazon", "present": false, "expectRemovedBy": null }
+  ],
+  "hostsFile": [
+    { "pattern": "ec2|amazonaws|aws", "present": false, "note": "No AWS hosts entries found" }
+  ],
+  "postCleanupExpectations": {
+    "TestMigration": {
+      "services": "AmazonSSMAgent and AWSLiteAgent stopped and disabled (MSI uninstall deferred)",
+      "registry":  "Keys present (removal deferred to Cutover)",
+      "software":  "Installed entries present (removal deferred to Cutover)",
+      "envVars":   "None present — already clean",
+      "tasks":     "None present — already clean",
+      "dirs":      "Present (removal deferred to Cutover)"
+    },
+    "Cutover": {
+      "services": "AmazonSSMAgent and AWSLiteAgent removed",
+      "registry":  "All Amazon registry keys removed",
+      "software":  "Amazon SSM Agent, aws-cfn-bootstrap, Amazon EC2Launch uninstalled. AWS PV Drivers retained.",
+      "envVars":   "None present — already clean",
+      "tasks":     "None present — already clean",
+      "dirs":      "C:\\Program Files\\Amazon removed"
+    }
+  }
+}
