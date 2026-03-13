@@ -209,11 +209,25 @@ aws ssm start-session `
 
 Once connected, in the remote session run:
 
+> **Note:** If the repo is **public**, use the simple form below. If it is **private**, use the PAT form — `raw.githubusercontent.com` returns 404 for private repos without authentication.
+
+**Public repo:**
+
 ```powershell
-# Download and run the readiness script from the GitHub repo
 # Note: if you have forked this repo, replace 'DarylsCorner' with your own org name
 $uri = "https://raw.githubusercontent.com/DarylsCorner/aws-azure-migration-runbook/main/validation/Invoke-MigrationReadiness.ps1"
 $script = (Invoke-WebRequest -Uri $uri -UseBasicParsing).Content
+Invoke-Expression $script
+# Output is written to C:\ProgramData\MigrationLogs\ on this VM
+```
+
+**Private repo (GitHub Personal Access Token required):**
+
+```powershell
+$token = Read-Host "GitHub PAT (needs repo:read scope)"
+$uri = "https://raw.githubusercontent.com/DarylsCorner/aws-azure-migration-runbook/main/validation/Invoke-MigrationReadiness.ps1"
+$headers = @{ Authorization = "Bearer $token" }
+$script = (Invoke-WebRequest -Uri $uri -Headers $headers -UseBasicParsing).Content
 Invoke-Expression $script
 # Output is written to C:\ProgramData\MigrationLogs\ on this VM
 ```
