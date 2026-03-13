@@ -478,6 +478,18 @@ Once Phases 4–6 pass:
 
 Wait for the cleanup job to complete (~2–3 min). The `-test` VM will be deleted from the resource group.
 
+### Delete the Phase 3 snapshot
+
+The pre-cleanup snapshot created in Phase 3 is **not** deleted by Portal's cleanup — it persists until removed manually. Once the test run has passed and you no longer need a rollback point, delete it:
+
+```powershell
+az snapshot delete `
+  --resource-group $RG `
+  --name "$TEST_VM_NAME-pre-cleanup-snapshot"
+```
+
+> **Note:** If you want to retain the snapshot for audit purposes, skip this step. Be aware it accrues storage costs.
+
 ---
 
 ## Phase 8 — Planned Failover (Portal)
