@@ -415,7 +415,7 @@ Before cleaning up the test failover, verify the application functions correctly
 - [ ] Application logs show no AWS credential errors
 - [ ] Azure Monitor / Log Analytics receiving data from the VM
 
-**Verify no AWS services are running:**
+**Verify no AWS services are still running:**
 
 ```powershell
 az vm run-command invoke `
@@ -425,6 +425,8 @@ az vm run-command invoke `
   --scripts "Get-Service | Where-Object { `$_.DisplayName -match 'amazon|aws|ec2|ssm' } | Select-Object Name, DisplayName, Status | Format-Table -AutoSize" `
   --query "value[0].message" -o tsv
 ```
+
+> **Expected:** All AWS services will show `Stopped`. They are still *installed* at this stage — MSI uninstalls are deferred to Cutover phase. Services appearing as `Running` would be a problem; `Stopped` is correct.
 
 If the application is broken, **restore from the snapshot** before proceeding (see **Rollback** section).
 
