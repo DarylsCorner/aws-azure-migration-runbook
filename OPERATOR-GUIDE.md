@@ -31,17 +31,20 @@ git --version
 
 ### 2. Clone the runbook repository
 
+**If you have not yet cloned the repo:**
+
 ```powershell
 $REPO_DIR = Read-Host "Local path to clone into (e.g. C:\Migrations\runbook)"
 git clone https://github.com/<your-org>/aws-azure-migration-runbook.git $REPO_DIR
 Set-Location $REPO_DIR
 ```
 
-> If the repo is already cloned, navigate to it and pull the latest:
-> ```powershell
-> Set-Location $REPO_DIR
-> git pull
-> ```
+**If you have already cloned the repo**, navigate to it and pull the latest:
+
+```powershell
+Set-Location "C:\path\to\your\cloned\repo"
+git pull
+```
 
 All `az vm run-command` calls in this guide use `@`-prefixed script paths (e.g. `--scripts "@windows/Invoke-AWSCleanup.ps1"`). These paths are **relative to the directory where your terminal is currently running**. You must always be in the root of the cloned repo when running those commands.
 
