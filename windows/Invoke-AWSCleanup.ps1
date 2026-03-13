@@ -375,7 +375,8 @@ $awsServices = @(
     @{ Name = 'Amazon EC2Launch';      Friendly = 'EC2Launch v2' },
     @{ Name = 'KinesisAgent';          Friendly = 'AWS Kinesis Agent for Windows' },
     @{ Name = 'AWSNitroEnclaves';      Friendly = 'AWS Nitro Enclaves' },
-    @{ Name = 'AWSCodeDeployAgent';    Friendly = 'AWS CodeDeploy Agent' }
+    @{ Name = 'AWSCodeDeployAgent';    Friendly = 'AWS CodeDeploy Agent' },
+    @{ Name = 'AWSLiteAgent';          Friendly = 'AWS Lite Guest Agent' }
 )
 
 foreach ($svc in $awsServices) {
@@ -485,6 +486,14 @@ Remove-RegistryKeyIfPresent `
     -KeyPath 'HKLM:\SOFTWARE\Amazon\SSM' `
     -FriendlyName 'SSM Agent registry hive'
 
+Remove-RegistryKeyIfPresent `
+    -KeyPath 'HKLM:\SOFTWARE\Amazon\MachineImage' `
+    -FriendlyName 'MachineImage registry hive'
+
+Remove-RegistryKeyIfPresent `
+    -KeyPath 'HKLM:\SOFTWARE\Amazon\WarmBoot' `
+    -FriendlyName 'WarmBoot registry hive'
+
 # Retain: HKLM:\SOFTWARE\Amazon\PVDriver -- driver registry; do not remove.
 
 # =============================================================================
@@ -513,6 +522,18 @@ if ($Phase -eq 'Cutover') {
     Uninstall-ProgramIfPresent -DisplayNamePattern 'AWS CodeDeploy Agent*' `
         -FriendlyName 'AWS CodeDeploy Agent'
 
+    # EC2Launch v2 MSI is registered as 'Amazon EC2Launch' (not 'EC2Launch*'), so needs its own call.
+    Uninstall-ProgramIfPresent -DisplayNamePattern 'Amazon EC2Launch*' `
+        -FriendlyName 'EC2Launch v2 (MSI)'
+
+    Uninstall-ProgramIfPresent -DisplayNamePattern 'aws-cfn-bootstrap*' `
+        -FriendlyName 'AWS CloudFormation Bootstrap'
+
+    # AWS PV Drivers -- intentionally NOT uninstalled.
+    # Azure Migrate replaces paravirtual drivers during ASR replication.
+    Add-ActionResult -Name 'Uninstall: AWS PV Drivers' -Status Skipped `
+        -Detail 'Intentionally skipped - Azure Migrate replaces PV drivers during replication'
+
     # AWS CLI -- only uninstall if explicitly understood; apps may call 'aws' commands.
     # This is flagged as informational. Uncomment to enable.
     # Uninstall-ProgramIfPresent -DisplayNamePattern 'AWS Command Line Interface*' `
@@ -527,6 +548,12 @@ if ($Phase -eq 'Cutover') {
         -FriendlyName 'CloudWatch Agent install directory'
     Remove-DirectoryIfPresent -DirectoryPath 'C:\Program Files\Amazon\EC2ConfigService' `
         -FriendlyName 'EC2Config install directory'
+
+    Remove-DirectoryIfPresent -DirectoryPath 'C:\Program Files\Amazon\cfn-bootstrap' `
+        -FriendlyName 'CloudFormation Bootstrap directory'
+
+    Remove-DirectoryIfPresent -DirectoryPath 'C:\Program Files\Amazon\XenTools' `
+        -FriendlyName 'XenTools directory'
 
     # Delete service registrations not removed by MSI (e.g. planted stubs or
     # services whose MSI was separately uninstalled leaving the SCM entry behind).

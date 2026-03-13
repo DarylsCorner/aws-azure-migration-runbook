@@ -292,7 +292,8 @@ function Check-IMDSReachable {
 function Scan-AllAwsServices {
     $knownNames = @(
         'AmazonSSMAgent','AmazonCloudWatchAgent','EC2Config','EC2Launch',
-        'Amazon EC2Launch','KinesisAgent','AWSNitroEnclaves','AWSCodeDeployAgent'
+        'Amazon EC2Launch','KinesisAgent','AWSNitroEnclaves','AWSCodeDeployAgent',
+        'AWSLiteAgent'
     )
     $awsPattern = 'amazon|\baws\b|\bec2\b|\bssm\b'
     $allServices = Get-Service -ErrorAction SilentlyContinue
@@ -312,7 +313,8 @@ function Scan-AllAwsServices {
 # Any sub-key under HKLM:\SOFTWARE\Amazon\ not covered by specific Check-RegistryKey calls
 function Scan-AmazonRegistrySubkeys {
     $knownKeys = @(
-        'EC2ConfigService','EC2Launch','EC2LaunchV2','AmazonCloudWatchAgent','SSM','PVDriver'
+        'EC2ConfigService','EC2Launch','EC2LaunchV2','AmazonCloudWatchAgent','SSM','PVDriver',
+        'MachineImage','WarmBoot'
     )
     $amazonRoot = 'HKLM:\SOFTWARE\Amazon'
     if (-not (Test-Path $amazonRoot)) { return }
@@ -331,8 +333,9 @@ function Scan-AmazonRegistrySubkeys {
 function Scan-AllAwsSoftware {
     $knownPatterns = @(
         'Amazon SSM Agent*','Amazon CloudWatch Agent*','EC2ConfigService*',
-        'EC2Launch*','Amazon Kinesis Agent*','AWS CodeDeploy Agent*',
-        'AWS Command Line Interface*','Amazon Web Services*'
+        'EC2Launch*','Amazon EC2Launch*','Amazon Kinesis Agent*','AWS CodeDeploy Agent*',
+        'AWS Command Line Interface*','Amazon Web Services*',
+        'aws-cfn-bootstrap*','AWS PV Drivers*'
     )
     $regPaths = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -360,7 +363,7 @@ function Scan-AllAwsSoftware {
 
 # Any subdirectory under C:\Program Files\Amazon\ not in the known list
 function Scan-AmazonDirectory {
-    $knownDirs = @('SSM','AmazonCloudWatchAgent','EC2ConfigService','EC2Launch','Ec2ConfigService')
+    $knownDirs = @('SSM','AmazonCloudWatchAgent','EC2ConfigService','EC2Launch','Ec2ConfigService','cfn-bootstrap','XenTools')
     $amazonRoot = 'C:\Program Files\Amazon'
     if (-not (Test-Path $amazonRoot)) { return }
     $subdirs = Get-ChildItem -Path $amazonRoot -Directory -ErrorAction SilentlyContinue
@@ -416,6 +419,7 @@ Check-Service 'Amazon EC2Launch'      'EC2Launch v2'
 Check-Service 'KinesisAgent'          'AWS Kinesis Agent'
 Check-Service 'AWSNitroEnclaves'      'AWS Nitro Enclaves'
 Check-Service 'AWSCodeDeployAgent'    'AWS CodeDeploy Agent'
+Check-Service 'AWSLiteAgent'          'AWS Lite Guest Agent'
 
 # -- Installed Software --------------------------------------------------------
 Write-Host "--- Installed Software ---"
@@ -427,6 +431,23 @@ Check-InstalledProgram 'Amazon Kinesis Agent*'        'AWS Kinesis Agent'
 Check-InstalledProgram 'AWS CodeDeploy Agent*'        'AWS CodeDeploy Agent'
 Check-InstalledProgram 'AWS Command Line Interface*'  'AWS CLI'
 Check-InstalledProgram 'Amazon Web Services*'         'Amazon Web Services (generic)'
+Check-InstalledProgram 'Amazon EC2Launch*'            'EC2Launch v2 (MSI)'
+Check-InstalledProgram 'aws-cfn-bootstrap*'           'AWS CloudFormation Bootstrap'
+
+# AWS PV Drivers -- intentionally NOT flagged as Found; Azure Migrate replaces these
+# during ASR replication. Report as Info so they never fail Post assertions.
+$pvEntry = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+) | ForEach-Object { Get-ItemProperty $_ -ErrorAction SilentlyContinue } |
+    Where-Object { $_ -ne $null -and $_.PSObject.Properties['DisplayName'] -ne $null -and $_.DisplayName -like 'AWS PV Drivers*' } |
+    Select-Object -First 1
+if ($pvEntry) {
+    Add-Finding -Category 'Installed Software' -Name 'AWS PV Drivers' -Status Info `
+        -Detail "v$($pvEntry.DisplayVersion) -- intentionally retained; Azure Migrate replaces PV drivers during ASR replication"
+} else {
+    Add-Finding -Category 'Installed Software' -Name 'AWS PV Drivers' -Status NotFound
+}
 
 # -- Registry -----------------------------------------------------------------
 Write-Host "--- Registry ---"
@@ -435,6 +456,8 @@ Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\EC2Launch'        'EC2Launch v1 registr
 Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\EC2LaunchV2'      'EC2Launch v2 registry hive'
 Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\AmazonCloudWatchAgent' 'CloudWatch Agent registry hive'
 Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\SSM'              'SSM Agent registry hive'
+Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\MachineImage'     'MachineImage registry hive'
+Check-RegistryKey 'HKLM:\SOFTWARE\Amazon\WarmBoot'         'WarmBoot registry hive'
 
 # -- Filesystem ----------------------------------------------------------------
 Write-Host "--- Filesystem ---"
@@ -443,6 +466,8 @@ Check-DirectoryExists 'C:\Program Files\Amazon\AmazonCloudWatchAgent' 'CloudWatc
 Check-DirectoryExists 'C:\Program Files\Amazon\EC2ConfigService'   'EC2Config binaries'
 Check-DirectoryExists "$env:SystemRoot\system32\config\systemprofile\.aws" 'SYSTEM .aws credentials'
 Check-DirectoryExists "$env:SystemRoot\ServiceProfiles\NetworkService\.aws" 'NetworkService .aws credentials'
+Check-DirectoryExists 'C:\Program Files\Amazon\cfn-bootstrap' 'CloudFormation Bootstrap directory'
+Check-DirectoryExists 'C:\Program Files\Amazon\XenTools'      'XenTools directory'
 
 # -- Environment Variables -----------------------------------------------------
 Write-Host "--- Environment Variables ---"
