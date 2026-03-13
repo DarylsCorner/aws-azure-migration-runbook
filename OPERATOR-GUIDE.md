@@ -152,9 +152,6 @@ Write-Host "  Source EC2    : $SOURCE_INSTANCE_ID"
 ### Prerequisites check
 
 ```powershell
-# Verify Azure login
-az account show --query "{Sub:name, ID:id}" -o table
-
 # Verify AWS CLI + SSM access to source VM
 aws ssm describe-instance-information `
   --filters "Key=InstanceIds,Values=$SOURCE_INSTANCE_ID" `
