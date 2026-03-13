@@ -432,9 +432,9 @@ If the application is broken, **restore from the snapshot** before proceeding (s
 
 ---
 
-## Phase 6 — Retrieve and Review Logs from Test VM
+## Phase 6 — Confirm Logs Written to Test VM
 
-Every script run writes a `.log` (transcript) and `.json` (structured report) to `C:\ProgramData\MigrationLogs\` on the VM.
+Every script run writes a `.log` (transcript) and `.json` (structured report) to `C:\ProgramData\MigrationLogs\` on the VM. The pass/fail results were already visible in the live Phase 4b and 4c output — this step just confirms the files were persisted on disk.
 
 ### List all migration log files
 
@@ -447,40 +447,23 @@ az vm run-command invoke `
   --query "value[0].message" -o tsv
 ```
 
-### Read the most recent readiness report (JSON)
+**Expected:** Four files present — `cleanup-TestMigration-*` (.json + .log) and `readiness-TestMigration-*` (.json + .log) from Phase 4b/4c, plus the original pre-failover `readiness-TestMigration-*` replicated from the source VM.
 
-```powershell
-az vm run-command invoke `
-  --resource-group $RG `
-  --name $TEST_VM_NAME `
-  --command-id RunPowerShellScript `
-  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\readiness-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
-  --query "value[0].message" -o tsv
-```
-
-### Read the most recent cleanup report (JSON)
-
-```powershell
-az vm run-command invoke `
-  --resource-group $RG `
-  --name $TEST_VM_NAME `
-  --command-id RunPowerShellScript `
-  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
-  --query "value[0].message" -o tsv
-```
-
-### Read the most recent transcript
-
-```powershell
-az vm run-command invoke `
-  --resource-group $RG `
-  --name $TEST_VM_NAME `
-  --command-id RunPowerShellScript `
-  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
-  --query "value[0].message" -o tsv
-```
-
-**Compare with Phase 1 baseline:** Every artifact that appeared as `[FOUND  ]` in the pre-failover baseline should now show as `[CLEAN  ]` in the TestMigration readiness report.
+> **If something looked wrong in Phase 4b or 4c**, use these commands to read the full reports for investigation:
+>
+> ```powershell
+> # Most recent readiness report
+> az vm run-command invoke --resource-group $RG --name $TEST_VM_NAME `
+>   --command-id RunPowerShellScript `
+>   --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\readiness-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+>   --query "value[0].message" -o tsv
+>
+> # Most recent cleanup report
+> az vm run-command invoke --resource-group $RG --name $TEST_VM_NAME `
+>   --command-id RunPowerShellScript `
+>   --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+>   --query "value[0].message" -o tsv
+> ```
 
 ---
 
