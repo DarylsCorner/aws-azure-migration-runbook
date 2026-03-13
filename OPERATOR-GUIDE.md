@@ -24,7 +24,7 @@ Verify versions:
 
 ```powershell
 pwsh --version
-az version --query '"azure-cli"' -o tsv
+az --version | Select-String "azure-cli"
 aws --version
 git --version
 ```
