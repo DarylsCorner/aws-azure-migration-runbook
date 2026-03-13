@@ -590,8 +590,9 @@ az vm run-command invoke `
 [PASS   ] No AWS components detected on this VM.
 [PASS   ] All Azure agent checks passed.
   Found AWS components : 0
-  Clean (not found)    : 39
+  Clean (not found)    : 46
   Azure checks passed  : 2
+  Warnings             : 0
 ```
 
 If any `[FOUND  ]` or `[WARN ]` items remain, **do not complete the cutover** until they are resolved. Refer to the **Readiness Script Reference** for what each finding means.
