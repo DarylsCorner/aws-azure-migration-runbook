@@ -178,6 +178,23 @@ Requires the Session Manager plugin. If you see `SessionManagerPlugin is not fou
 
 ```powershell
 winget install Amazon.SessionManagerPlugin
+# Restart your terminal after installing
+```
+
+If it still fails after restarting, the winget installer did not add itself to PATH. Fix for the **current session only**:
+
+```powershell
+$env:PATH += ";C:\Program Files\Amazon\SessionManagerPlugin\bin"
+```
+
+To fix it **permanently** (requires an admin terminal — right-click PowerShell → Run as Administrator):
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+    "PATH",
+    [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";C:\Program Files\Amazon\SessionManagerPlugin\bin",
+    "Machine"
+)
 # Then restart your terminal
 ```
 
