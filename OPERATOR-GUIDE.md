@@ -213,11 +213,13 @@ Once connected, in the remote session run:
 # Note: if you have forked this repo, replace 'DarylsCorner' with your own org name
 $uri = "https://raw.githubusercontent.com/DarylsCorner/aws-azure-migration-runbook/main/validation/Invoke-MigrationReadiness.ps1"
 $script = (Invoke-WebRequest -Uri $uri -UseBasicParsing).Content
-& ([scriptblock]::Create($script)) -Mode Pre
+& ([scriptblock]::Create($script)) -Mode Pre -Phase TestMigration
 # Output is written to C:\ProgramData\MigrationLogs\ on this VM
 ```
 
 > **Expected:** Every AWS component on the source VM will show as `[FOUND  ]`. This is correct — the source VM is untouched. The script runs in inventory-only mode (`-Mode Pre`) and does **not** assert a clean state.
+>
+> **Audit note:** Passing `-Phase TestMigration` names the output file `readiness-TestMigration-<timestamp>.*`. Since ASR replicates the full disk, this file will be present on the Azure VMs after failover alongside the post-cleanup `readiness-Cutover-<timestamp>.*` files — making before/after clearly distinguishable without relying on timestamps alone.
 
 Type `exit` to close the session when done.
 
@@ -229,7 +231,7 @@ Type `exit` to close the session when done.
 ```powershell
 # If you have the repo cloned on the source VM:
 cd C:\path\to\aws-azure-migration-runbook
-.\validation\Invoke-MigrationReadiness.ps1 -Mode Pre
+.\validation\Invoke-MigrationReadiness.ps1 -Mode Pre -Phase TestMigration
 ```
 
 Or download from GitHub as in Option A.
@@ -238,7 +240,7 @@ Output is written to `C:\ProgramData\MigrationLogs\` on the source VM.
 
 ---
 
-**Save the output.** This is your pre-migration state capture. Any artifact listed as `[FOUND  ]` here should appear as `[CLEAN  ]` after the Cutover cleanup.
+**Save the output.** This is your pre-migration state capture, recorded as `readiness-TestMigration-<timestamp>.*` on the VM. Any artifact listed as `[FOUND  ]` here should appear as `[CLEAN  ]` in the post-Cutover `readiness-Cutover-<timestamp>.*` report.
 
 ---
 
