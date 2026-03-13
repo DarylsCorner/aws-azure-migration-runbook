@@ -650,24 +650,19 @@ $report = @{
 $reportJson = $report | ConvertTo-Json -Depth 5 -Compress
 
 # Write to file
+# Do NOT use $script: variables here. When az vm run-command wraps the injected
+# script inside an outer runner, $script: may refer to the runner's scope and be
+# unset, and Set-StrictMode then throws on the access — making any expression
+# that touches $script: evaluate to nothing.
+# Use only the bound parameter $Phase and string literals, which are always safe.
+$_reportPath = "C:\ProgramData\MigrationLogs\cleanup-$Phase-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
 try {
-    # Avoid $script: scope here — when az vm run-command wraps the injected
-    # script in an outer runner, $script: may refer to the runner's scope where
-    # none of our variables were set.  Use only $Phase (a bound parameter) and
-    # Get-Date (a cmdlet) — both are always available regardless of scope context.
-    $effectiveReportPath = if ($script:ReportPath) {
-        $script:ReportPath
-    } elseif ($ReportPath) {
-        $ReportPath
-    } else {
-        "C:\ProgramData\MigrationLogs\cleanup-$Phase-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
-    }
-    $reportDir = Split-Path $effectiveReportPath -Parent
+    $reportDir = 'C:\ProgramData\MigrationLogs'
     if (-not (Test-Path $reportDir)) {
         New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
     }
-    $reportJson | Set-Content -Path $effectiveReportPath -Encoding UTF8
-    Write-Log "Report written to: $effectiveReportPath"
+    $reportJson | Set-Content -Path $_reportPath -Encoding UTF8
+    Write-Log "Report written to: $_reportPath"
 } catch {
     Write-Log "Could not write report file: $($_.Exception.Message)" -Level ERROR
 }
