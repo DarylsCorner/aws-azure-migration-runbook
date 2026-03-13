@@ -221,7 +221,43 @@ $script = (Invoke-WebRequest -Uri $uri -UseBasicParsing).Content
 >
 > **Audit note:** Passing `-Phase TestMigration` names the output file `readiness-TestMigration-<timestamp>.*`. Since ASR replicates the full disk, this file will be present on the Azure VMs after failover alongside the post-cleanup `readiness-Cutover-<timestamp>.*` files — making before/after clearly distinguishable without relying on timestamps alone.
 
+### Review the baseline report
+
+While still in the SSM session, you can read the JSON report before closing:
+
+```powershell
+$report = Get-ChildItem "C:\ProgramData\MigrationLogs\readiness-TestMigration-*.json" |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Get-Content $report.FullName | ConvertFrom-Json | ConvertTo-Json -Depth 10
+```
+
 Type `exit` to close the session when done.
+
+### Download the report to your local machine
+
+From your **local terminal** (not inside the SSM session), pull the report without needing RDP or S3:
+
+```powershell
+$cmdId = aws ssm send-command `
+  --instance-ids $SOURCE_INSTANCE_ID `
+  --region $AWS_REGION `
+  --document-name "AWS-RunPowerShellScript" `
+  --parameters 'commands=["$f = Get-ChildItem C:\\ProgramData\\MigrationLogs\\readiness-TestMigration-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1; Get-Content $f.FullName -Raw"]' `
+  --query "Command.CommandId" --output text
+
+Start-Sleep -Seconds 5
+
+aws ssm get-command-invocation `
+  --command-id $cmdId `
+  --instance-id $SOURCE_INSTANCE_ID `
+  --region $AWS_REGION `
+  --query "StandardOutputContent" `
+  --output text | Out-File "readiness-TestMigration-source.json"
+```
+
+The report is saved locally as `readiness-TestMigration-source.json` in whatever directory your terminal is running from.
+
+> **Tip:** Open it in VS Code with `code readiness-TestMigration-source.json` for readable JSON formatting.
 
 ### Option B — RDP directly to the source VM
 
