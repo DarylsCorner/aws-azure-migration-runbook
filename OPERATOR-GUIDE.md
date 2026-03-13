@@ -161,8 +161,6 @@ aws ssm describe-instance-information `
 # Expected: PingStatus = Online
 ```
 
-> **Requirement:** Azure VM Agent must be installed and **Ready** on any Azure VM before `az vm run-command` will work. Verify in Portal → VM → Properties → Agent status.
-
 ---
 
 ## Phase 1 — Pre-Failover Baseline (Source VM in AWS, via SSM)
@@ -273,6 +271,8 @@ Snapshot typically completes in 1–3 minutes. Confirm it appears in Portal unde
 ---
 
 ## Phase 4 — TestMigration Cleanup on Test VM
+
+> **Requirement:** Before running any `az vm run-command` below, confirm the Azure VM Agent is installed and **Ready** on the test VM: Portal → VM → Properties → Agent status.
 
 ### 4a. Dry-run first (no changes made to the VM)
 
