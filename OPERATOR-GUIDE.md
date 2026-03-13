@@ -19,6 +19,7 @@ Complete this section once on the machine from which you will run the migration.
 | Azure CLI (`az`) | 2.50+ | `winget install Microsoft.AzureCLI` |
 | AWS CLI (`aws`) | 2.x | [docs.aws.amazon.com/cli](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) |
 | Git | any | `winget install Git.Git` |
+| AWS Session Manager plugin | any | `winget install Amazon.SessionManagerPlugin` |
 
 Verify versions:
 
@@ -171,7 +172,12 @@ Run the readiness script against the **source VM while it is still in AWS**. Thi
 
 ### Option A — SSM Session Manager (interactive, no RDP needed)
 
-Requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) for the AWS CLI.
+Requires the Session Manager plugin. If you see `SessionManagerPlugin is not found`, install it first:
+
+```powershell
+winget install Amazon.SessionManagerPlugin
+# Then restart your terminal
+```
 
 ```powershell
 # Open an interactive PowerShell session on the source VM
