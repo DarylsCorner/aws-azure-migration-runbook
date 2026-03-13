@@ -1,81 +1,389 @@
 # AWS → Azure Migration: Operator Guide
 
-Step-by-step instructions for running the in-guest cleanup runbook against a migrated VM.
-This guide is written for the operator who will execute the migration, not the engineer who built the tooling.
+End-to-end runbook for migrating a Windows VM from AWS to Azure using Azure Migrate/ASR.
+Covers pre-failover source inventory, test failover validation, production cutover, and final readiness verification.
+
+No values are hardcoded — all site-specific details are collected at the start of each session.
 
 ---
 
-## Before You Begin
+## Workflow Overview
 
-### Prerequisites
-
-| Requirement | How to verify |
-|---|---|
-| `az` CLI installed and logged in | `az account show` |
-| Correct subscription active | `az account set --subscription "6f9c9b05-871f-4edd-8183-893998be6ec3"` |
-| Test or production VM is running in Azure | Portal → Virtual Machines → VM shows **Running** |
-| Azure VM Agent is installed on the VM | Portal → VM → Properties → Agent status: **Ready** |
-
-```powershell
-# Set the correct subscription before running any az commands
-az account set --subscription "6f9c9b05-871f-4edd-8183-893998be6ec3"
-az account show --query "{Sub:name, ID:id}" -o table
+```
+Phase 0  Bootstrap session variables
+Phase 1  Pre-failover baseline — run readiness check on SOURCE VM (AWS, via SSM)
+Phase 2  Test Failover (Portal)
+Phase 3  Prepare test VM — snapshot + tag OS disk
+Phase 4  TestMigration cleanup on test VM — dry-run → live → readiness check
+Phase 5  Application validation
+Phase 6  Retrieve & review logs from test VM
+Phase 7  Cleanup test failover (Portal)
+Phase 8  Planned Failover (Portal)
+Phase 9  Prepare production VM — snapshot + tag OS disk
+Phase 10 Cutover cleanup on production VM — dry-run → live → readiness check
+Phase 11 Retrieve & review logs from production VM
+Phase 12 Complete cutover (Portal)
 ```
 
-> **Automation Account path:** If your organisation uses Azure Automation, see `tests/Invoke-RunbookTest.ps1` and `tests/Setup-AutomationInfra.ps1`. That path adds a snapshot gate, centralized job history, and managed identity execution. The steps below use `az vm run-command` which is simpler and suitable for hands-on operator-led migrations.
-
 ---
 
-## Overview
+## Phase 0 — Session Bootstrap
 
-The cleanup runs in **two phases** matching the Azure Migrate workflow:
-
-| Phase | When to run | What it does |
-|---|---|---|
-| `TestMigration` | After Azure Migrate creates the test VM | Disables all AWS services, removes credentials/env vars, reconfigures cloud-init. MSI/package uninstalls **deferred**. |
-| `Cutover` | After Azure Migrate creates the production VM | All of TestMigration **plus** uninstalls AWS packages, removes log directories, purges cfn residuals. |
-
-Always run `TestMigration` first on the test VM before touching the production cutover VM.
-
----
-
-## Step 1 — Take a Snapshot (Required)
-
-Take a snapshot of the VM's OS disk before any changes are made. This is your rollback point.
-
-### 1a. Find the OS disk ID
+Paste this entire block into your PowerShell terminal at the start of every session.
+You will be prompted for all site-specific values.
 
 ```powershell
-$VM_NAME = "<vm-name>"          # e.g. EC2AMAZ-NJ9HDHK-test
-$RG      = "rg-mig-landing"
+# ── Azure ─────────────────────────────────────────────────────────────────────
+$SUBSCRIPTION_ID = Read-Host "Azure Subscription ID"
+$RG              = Read-Host "Azure Resource Group [press Enter for rg-mig-landing]"
+if ([string]::IsNullOrWhiteSpace($RG)) { $RG = "rg-mig-landing" }
 
+az account set --subscription $SUBSCRIPTION_ID
+az account show --query "{Subscription:name, ID:id, State:state}" -o table
+
+# ── AWS ───────────────────────────────────────────────────────────────────────
+$AWS_REGION          = Read-Host "AWS Region [press Enter for us-east-1]"
+if ([string]::IsNullOrWhiteSpace($AWS_REGION)) { $AWS_REGION = "us-east-1" }
+
+$SOURCE_INSTANCE_ID  = Read-Host "Source EC2 Instance ID (e.g. i-0abc123def456)"
+
+# ── Derived (populated later) ─────────────────────────────────────────────────
+# $TEST_VM_NAME   — set in Phase 2 once the test VM appears in Azure
+# $PROD_VM_NAME   — set in Phase 8 once the production VM appears in Azure
+# $DISK_ID        — set per-VM in Phases 3 and 9
+
+Write-Host ""
+Write-Host "Session variables:" -ForegroundColor Cyan
+Write-Host "  Subscription  : $SUBSCRIPTION_ID"
+Write-Host "  Resource group: $RG"
+Write-Host "  AWS Region    : $AWS_REGION"
+Write-Host "  Source EC2    : $SOURCE_INSTANCE_ID"
+```
+
+### Prerequisites check
+
+```powershell
+# Verify Azure login
+az account show --query "{Sub:name, ID:id}" -o table
+
+# Verify AWS CLI + SSM access to source VM
+aws ssm describe-instance-information `
+  --filters "Key=InstanceIds,Values=$SOURCE_INSTANCE_ID" `
+  --region $AWS_REGION `
+  --query "InstanceInformationList[0].{ID:InstanceId,Status:PingStatus,Platform:PlatformType}" `
+  --output table
+# Expected: PingStatus = Online
+```
+
+> **Requirement:** Azure VM Agent must be installed and **Ready** on any Azure VM before `az vm run-command` will work. Verify in Portal → VM → Properties → Agent status.
+
+---
+
+## Phase 1 — Pre-Failover Baseline (Source VM in AWS, via SSM)
+
+Run the readiness script against the **source VM while it is still in AWS**. This captures a full inventory of every AWS artifact on the machine before anything is touched. Save this output — it is your reference for what was present and what needs to be removed.
+
+```powershell
+# Read the local script and send it to the source VM via SSM
+$ReadinessScript = Get-Content "validation\Invoke-MigrationReadiness.ps1" -Raw
+
+$SSM_CMD_ID = (aws ssm send-command `
+  --instance-ids $SOURCE_INSTANCE_ID `
+  --document-name "AWS-RunPowerShellScript" `
+  --parameters "commands=[$ReadinessScript]" `
+  --comment "Pre-failover readiness baseline" `
+  --region $AWS_REGION `
+  --query "Command.CommandId" `
+  --output text)
+
+Write-Host "SSM Command ID: $SSM_CMD_ID"
+```
+
+Wait for the command to finish (typically 30–60 seconds), then retrieve the output:
+
+```powershell
+# Poll until the command reaches a terminal state
+do {
+    Start-Sleep -Seconds 10
+    $SSM_STATUS = (aws ssm get-command-invocation `
+      --command-id $SSM_CMD_ID `
+      --instance-id $SOURCE_INSTANCE_ID `
+      --region $AWS_REGION `
+      --query "StatusDetails" --output text)
+    Write-Host "  Status: $SSM_STATUS"
+} while ($SSM_STATUS -in @("Pending","InProgress","Delayed"))
+
+# Retrieve output
+aws ssm get-command-invocation `
+  --command-id $SSM_CMD_ID `
+  --instance-id $SOURCE_INSTANCE_ID `
+  --region $AWS_REGION `
+  --query "{Status:StatusDetails, Output:StandardOutputContent, Errors:StandardErrorContent}" `
+  --output json
+```
+
+**Save the output.** This is your pre-migration state capture. Any artifact listed as `[FOUND  ]` here should appear as `[CLEAN  ]` after the Cutover cleanup.
+
+> **If SSM access is unavailable:** Connect to the source VM via RDP and run:
+> ```powershell
+> .\validation\Invoke-MigrationReadiness.ps1 -Mode Pre -Phase TestMigration
+> ```
+> Output is written to `C:\ProgramData\MigrationLogs\` on the source VM.
+
+---
+
+## Phase 2 — Test Failover (Portal)
+
+1. **Portal** → Recovery Services Vault → select the vault → **Replicated Items** → select the VM
+2. Verify **Replication health: Healthy** and **RPO** shows a recent timestamp (< 1 hour)
+3. Click **Test Failover**
+   - Recovery point: **Latest**
+   - Virtual network: select the landing zone VNet
+   - Click **OK**
+4. Monitor under **Jobs** — wait until the job status reaches **Successful** (~5–10 min)
+5. Go to **Resource Groups** → confirm a new VM ending in `-test` is present and **Running**
+
+Once the test VM is running, capture its name:
+
+```powershell
+$TEST_VM_NAME = Read-Host "Test VM name shown in portal (e.g. EC2AMAZ-NJ9HDHK-test)"
+Write-Host "Test VM: $TEST_VM_NAME"
+```
+
+---
+
+## Phase 3 — Prepare Test VM (Snapshot + Tag)
+
+Take a snapshot of the test VM's OS disk before any changes are made. This is your rollback point.
+
+```powershell
+# Get the OS disk resource ID
 $DISK_ID = az vm show `
   --resource-group $RG `
-  --name $VM_NAME `
+  --name $TEST_VM_NAME `
   --query "storageProfile.osDisk.managedDisk.id" `
   --output tsv
 
-Write-Host $DISK_ID
-```
+Write-Host "Disk ID: $DISK_ID"
 
-### 1b. Create a snapshot
-
-```powershell
+# Create a snapshot
 az snapshot create `
   --resource-group $RG `
-  --name "$VM_NAME-pre-cleanup-snapshot" `
+  --name "$TEST_VM_NAME-pre-cleanup-snapshot" `
   --source $DISK_ID
+
+# Tag the disk as having a recovery point
+az resource tag `
+  --ids $DISK_ID `
+  --tags MigrationSnapshot=true
+
+# Verify
+az resource show --ids $DISK_ID --query tags -o json
+# Expected: { "MigrationSnapshot": "true" }
 ```
 
-Typically completes in 1–3 minutes. Verify in Portal under **Snapshots** in the resource group.
+Snapshot typically completes in 1–3 minutes. Confirm it appears in Portal under **Snapshots** in the resource group.
 
-> **Tip:** If Azure Migrate already created a restore point during replication, you may use that as your recovery point. Confirm with your Azure Migrate administrator.
+---
 
-### 1c. Tag the disk
+## Phase 4 — TestMigration Cleanup on Test VM
 
-This tag signals to the Automation Runbook path that a recovery point exists. Not enforced when running via `az vm run-command` directly, but apply it anyway as a record.
+### 4a. Dry-run first (no changes made to the VM)
 
 ```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $TEST_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "@windows/Invoke-AWSCleanup.ps1" `
+  --parameters "Phase=TestMigration" "DryRun=true" `
+  --query "value[0].message" -o tsv
+```
+
+Review the output. Every AWS component present on the VM will appear with status `[DryRun]`. Components not present will show `[Skipped]`.
+
+**Before proceeding, verify:**
+- No `[ERROR ]` lines
+- Expected AWS components appear under `[DryRun]` (cross-reference with the Phase 1 baseline)
+- `Errors: 0` in the summary at the end
+
+### 4b. Live TestMigration run
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $TEST_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "@windows/Invoke-AWSCleanup.ps1" `
+  --parameters "Phase=TestMigration" `
+  --query "value[0].message" -o tsv
+```
+
+**Expected summary:**
+```
+Total   : <n>
+Done    : <n>    ← actions completed
+Skipped : <n>    ← components not present (fine)
+Errors  : 0      ← must be 0
+```
+
+### 4c. Post-TestMigration readiness check
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $TEST_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "@validation/Invoke-MigrationReadiness.ps1" `
+  --parameters "Phase=TestMigration" `
+  --query "value[0].message" -o tsv
+```
+
+**Expected output:**
+```
+[PASS   ] No AWS components detected on this VM.
+[PASS   ] All Azure agent checks passed.
+  Found AWS components : 0
+  Clean (not found)    : 39
+  Azure checks passed  : 2
+```
+
+> **Note:** MSI/package uninstalls are **deferred to Cutover phase** — this is by design. The TestMigration readiness check asserts that services and credentials are clean, not that packages are removed.
+
+If any `[WARN ]` heuristic entries appear, review them manually before proceeding (see **Readiness Script Reference**).
+
+---
+
+## Phase 5 — Application Validation
+
+Before cleaning up the test failover, verify the application functions correctly in Azure:
+
+- [ ] All application services start and respond to health checks
+- [ ] Network connectivity to Azure services (DNS, storage endpoints, Key Vault, etc.) works
+- [ ] No dependency on AWS-specific endpoints (EC2 metadata `169.254.169.254`, S3 paths, SQS, etc.)
+- [ ] Application logs show no AWS credential errors
+- [ ] Azure Monitor / Log Analytics receiving data from the VM
+
+**Verify no AWS services are running:**
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $TEST_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "Get-Service | Where-Object { `$_.DisplayName -match 'amazon|aws|ec2|ssm' } | Select-Object Name, DisplayName, Status | Format-Table -AutoSize" `
+  --query "value[0].message" -o tsv
+```
+
+If the application is broken, **restore from the snapshot** before proceeding (see **Rollback** section).
+
+---
+
+## Phase 6 — Retrieve and Review Logs from Test VM
+
+Every script run writes a `.log` (transcript) and `.json` (structured report) to `C:\ProgramData\MigrationLogs\` on the VM.
+
+### List all migration log files
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $TEST_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "Get-ChildItem C:\ProgramData\MigrationLogs\ | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize" `
+  --query "value[0].message" -o tsv
+```
+
+### Read the most recent readiness report (JSON)
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $TEST_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\readiness-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+  --query "value[0].message" -o tsv
+```
+
+### Read the most recent cleanup report (JSON)
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $TEST_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+  --query "value[0].message" -o tsv
+```
+
+### Read the most recent transcript
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $TEST_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+  --query "value[0].message" -o tsv
+```
+
+**Compare with Phase 1 baseline:** Every artifact that appeared as `[FOUND  ]` in the pre-failover baseline should now show as `[CLEAN  ]` in the TestMigration readiness report.
+
+---
+
+## Phase 7 — Cleanup Test Failover (Portal)
+
+Once Phases 4–6 pass:
+
+1. **Portal** → Recovery Services Vault → select the vault → **Replicated Items** → select the VM
+2. Click **Cleanup test failover**
+3. Check **"Testing is complete. Delete test failover virtual machine"**
+4. Click **OK**
+
+Wait for the cleanup job to complete (~2–3 min). The `-test` VM will be deleted from the resource group.
+
+---
+
+## Phase 8 — Planned Failover (Portal)
+
+1. **Portal** → Recovery Services Vault → select the vault → **Replicated Items** → select the VM
+2. Verify **Replication health: Healthy** and RPO is recent
+3. Click **Failover** (Planned Failover)
+   - Direction: AWS → Azure
+   - Recovery point: **Latest**
+   - Check **"Shut down machine before beginning failover"** for a zero-data-loss cutover (the source VM will be powered off)
+   - Click **OK**
+4. Monitor under **Jobs** — wait until **Successful** (~5–15 min)
+5. Go to **Resource Groups** → confirm the production VM is **Running**
+
+Once the production VM is running, capture its name:
+
+```powershell
+$PROD_VM_NAME = Read-Host "Production VM name shown in portal (e.g. EC2AMAZ-NJ9HDHK)"
+Write-Host "Production VM: $PROD_VM_NAME"
+```
+
+---
+
+## Phase 9 — Prepare Production VM (Snapshot + Tag)
+
+```powershell
+# Get the OS disk resource ID for the production VM
+$DISK_ID = az vm show `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
+  --query "storageProfile.osDisk.managedDisk.id" `
+  --output tsv
+
+Write-Host "Disk ID: $DISK_ID"
+
+# Create a snapshot
+az snapshot create `
+  --resource-group $RG `
+  --name "$PROD_VM_NAME-pre-cleanup-snapshot" `
+  --source $DISK_ID
+
+# Tag the disk
 az resource tag `
   --ids $DISK_ID `
   --tags MigrationSnapshot=true
@@ -87,135 +395,49 @@ az resource show --ids $DISK_ID --query tags -o json
 
 ---
 
-## Step 2 — Dry Run (Recommended)
+## Phase 10 — Cutover Cleanup on Production VM
 
-Run in dry-run mode first. No changes are made to the VM — the script reports what **would** happen.
-
-```powershell
-$VM_NAME = "<vm-name>"          # e.g. EC2AMAZ-NJ9HDHK-test
-$RG      = "rg-mig-landing"
-
-az vm run-command invoke `
-  -g $RG -n $VM_NAME `
-  --command-id RunPowerShellScript `
-  --scripts "@windows/Invoke-AWSCleanup.ps1" `
-  --parameters "Phase=TestMigration" "DryRun=true" `
-  --query "value[0].message" -o tsv
-```
-
-Review the output. Look for any lines with `[ERROR]` — investigate those before proceeding.
-
-A clean dry-run on a freshly migrated VM typically shows **many Skipped** plus **DryRun** entries for each AWS component that would be removed. No `[ERROR]` lines means the script is safe to run live.
-
----
-
-## Step 3 — TestMigration Phase (Live)
-
-Once the dry-run looks correct, run live:
+### 10a. Dry-run (Cutover phase)
 
 ```powershell
 az vm run-command invoke `
-  -g $RG -n $VM_NAME `
-  --command-id RunPowerShellScript `
-  --scripts "@windows/Invoke-AWSCleanup.ps1" `
-  --parameters "Phase=TestMigration" `
-  --query "value[0].message" -o tsv
-```
-
-**Expected outcome:** All AWS services stopped and disabled, credentials and env vars removed. MSI/package uninstalls are deferred to the Cutover phase.
-
-After the run, check the summary lines at the end of the output:
-
-```
-  Total   : <n>
-  Done    : <n>    ← actions completed
-  Skipped : <n>    ← components not present (fine)
-  Errors  : 0      ← must be 0
-```
-
-Then confirm the VM is still healthy:
-- RDP or Bastion in and confirm the application starts correctly
-- No AWS services running: paste this into the VM or run via run-command:
-  ```powershell
-  Get-Service | Where-Object { $_.DisplayName -match 'amazon|aws|ec2' }
-  ```
-
----
-
-## Step 4 — Application Validation
-
-Before proceeding to cutover, verify the application functions correctly in Azure:
-
-- All application services start and respond to health checks
-- Network connectivity to Azure services works (DNS, storage endpoints, etc.)
-- No application dependencies on AWS-specific endpoints (e.g., EC2 metadata `169.254.169.254`, S3 paths)
-- Logs show no AWS credential errors
-
-If the application is broken, **restore from the snapshot** (see Rollback below) before proceeding.
-
----
-
-## Step 5 — Cutover Phase
-
-When you are ready for final cutover:
-
-1. **Portal: Planned Failover** — ASR shuts down the source VM, replicates the final delta, and creates the production VM in Azure
-2. Wait for the production VM to appear in `rg-mig-landing` and reach **Running** state
-3. **Repeat Steps 1a–1c** on the production VM's OS disk (snapshot + tag)
-4. Set `$VM_NAME` to the production VM name, then run the Cutover dry-run:
-
-```powershell
-$VM_NAME = "<production-vm-name>"   # the VM created by Planned Failover
-$RG      = "rg-mig-landing"
-
-# Dry-run first
-az vm run-command invoke `
-  -g $RG -n $VM_NAME `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
   --command-id RunPowerShellScript `
   --scripts "@windows/Invoke-AWSCleanup.ps1" `
   --parameters "Phase=Cutover" "DryRun=true" `
   --query "value[0].message" -o tsv
 ```
 
-Review the dry-run output — confirm the expected MSI uninstalls and service deletions appear. Then run live:
+Review carefully. The Cutover phase includes MSI/package uninstalls and log directory removal that TestMigration deferred. Confirm these appear under `[DryRun]` before proceeding.
+
+### 10b. Live Cutover run
 
 ```powershell
 az vm run-command invoke `
-  -g $RG -n $VM_NAME `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
   --command-id RunPowerShellScript `
   --scripts "@windows/Invoke-AWSCleanup.ps1" `
   --parameters "Phase=Cutover" `
   --query "value[0].message" -o tsv
 ```
 
-Expected summary: `Errors: 0`. Proceed to Step 6.
+**Expected summary:** `Errors: 0`
 
----
-
-## Step 6 — Post-Cutover Validation
-
-Run the readiness auditor to verify the VM is fully clean.
-
-### Windows — via az vm run-command (preferred)
+### 10c. Post-Cutover readiness check
 
 ```powershell
 az vm run-command invoke `
-  -g <resource-group> `
-  -n <vm-name> `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
   --command-id RunPowerShellScript `
   --scripts "@validation/Invoke-MigrationReadiness.ps1" `
   --parameters "Phase=Cutover" `
   --query "value[0].message" -o tsv
 ```
 
-### Windows — directly inside the VM (via RDP or Bastion)
-
-```powershell
-.\validation\Invoke-MigrationReadiness.ps1 -Mode Post -Phase Cutover
-```
-
-A passing post-audit shows:
-
+**Expected output (full clean):**
 ```
 [PASS   ] No AWS components detected on this VM.
 [PASS   ] All Azure agent checks passed.
@@ -224,30 +446,59 @@ A passing post-audit shows:
   Azure checks passed  : 2
 ```
 
-Both the cleanup and readiness scripts print the paths of their output files at the end of every run:
+If any `[FOUND  ]` or `[WARN ]` items remain, **do not complete the cutover** until they are resolved. Refer to the **Readiness Script Reference** for what each finding means.
 
+---
+
+## Phase 11 — Retrieve and Review Logs from Production VM
+
+### List log files
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "Get-ChildItem C:\ProgramData\MigrationLogs\ | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize" `
+  --query "value[0].message" -o tsv
 ```
-Report     : C:\ProgramData\MigrationLogs\readiness-Cutover-20260313-021606.json
-Transcript : C:\ProgramData\MigrationLogs\readiness-Cutover-20260313-021606.log
+
+### Read most recent readiness report
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\readiness-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+  --query "value[0].message" -o tsv
 ```
 
-See the **Log Files** section below for how to list and retrieve these from the VM.
+### Read most recent cleanup report
 
-If any `[WARN ]` lines appear under **Heuristic Scans**, review them manually — they flag unlisted AWS artifacts (unknown services, registry keys, software, or directories matching `Amazon`/`AWS`/`EC2` keywords) that were not in the standard checklist. Decide whether each one should be removed before completing the migration.
-
-### Linux
-
-```bash
-# Run inside the VM or via Run Command
-sudo bash validation/invoke-migration-readiness.sh --mode post
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+  --query "value[0].message" -o tsv
 ```
 
-A passing post-audit shows:
-- All AWS service and package checks: `NotFound`
-- All AWS credential directories: `NotFound`
-- Azure Linux Agent (`waagent`): `Pass` (active and enabled)
-- cloud-init datasource: Azure drop-in present, no Ec2 datasource
-- Exit code `0`
+**Final validation:** Compare this readiness report against the Phase 1 pre-failover baseline. Every `[FOUND  ]` item from the baseline should now be `[CLEAN  ]` in this report.
+
+---
+
+## Phase 12 — Complete Cutover (Portal)
+
+Once Phase 10 readiness check passes and Phase 11 log review is complete:
+
+1. **Portal** → Recovery Services Vault → select the vault → **Replicated Items** → select the VM
+2. Click **Complete Cutover**
+3. Confirm — this commits the migration and stops replication billing
+4. Optionally: delete the Recovery Services Vault item now that replication is no longer needed
+
+The source EC2 instance can now be stopped/terminated per your decommission plan.
 
 ---
 
@@ -255,63 +506,37 @@ A passing post-audit shows:
 
 If anything goes wrong after cleanup and the application is broken:
 
-### Restore from snapshot (Azure Portal)
+### Restore from snapshot (Portal)
 
-1. Stop the VM
-2. Portal → Disks → Swap OS disk → select the snapshot (or create a new disk from the snapshot)
-3. Start the VM
+1. Stop the VM in Portal
+2. Portal → **Snapshots** → find `<vm-name>-pre-cleanup-snapshot` → **Create disk**
+3. Portal → VM → **Stop** → **Disks** → **Swap OS disk** → select the newly created disk
+4. Start the VM
 
 ### Restore from snapshot (CLI)
 
-```bash
-# Create a new disk from the snapshot
-az disk create \
-  --resource-group <rg> \
-  --name <vm-name>-restored-disk \
-  --source <snapshot-name>
-
-# Swap the OS disk (VM must be stopped)
-az vm stop --resource-group <rg> --name <vm-name>
-az vm update \
-  --resource-group <rg> \
-  --name <vm-name> \
-  --os-disk <vm-name>-restored-disk
-az vm start --resource-group <rg> --name <vm-name>
-```
-
----
-
-## Running the Cleanup Directly (Without Automation Account)
-
-If you need to run the scripts directly inside the VM (e.g., via SSH or RDP without Automation):
-
-### Windows
-
 ```powershell
-# Dry-run first
-.\windows\Invoke-AWSCleanup.ps1 -DryRun -Phase TestMigration
+$SNAPSHOT_NAME = Read-Host "Snapshot name to restore from"
+$VM_TO_RESTORE = Read-Host "VM name to restore"
 
-# Live TestMigration
-.\windows\Invoke-AWSCleanup.ps1 -Phase TestMigration
+# Create a new disk from the snapshot
+az disk create `
+  --resource-group $RG `
+  --name "$VM_TO_RESTORE-restored-disk" `
+  --source $SNAPSHOT_NAME
 
-# Live Cutover
-.\windows\Invoke-AWSCleanup.ps1 -Phase Cutover -ReportPath C:\Logs\cleanup.json
+# Stop the VM
+az vm stop --resource-group $RG --name $VM_TO_RESTORE
+
+# Swap the OS disk
+az vm update `
+  --resource-group $RG `
+  --name $VM_TO_RESTORE `
+  --os-disk "$VM_TO_RESTORE-restored-disk"
+
+# Start the VM
+az vm start --resource-group $RG --name $VM_TO_RESTORE
 ```
-
-### Linux
-
-```bash
-# Dry-run first
-sudo bash linux/invoke-aws-cleanup.sh --dry-run --phase test-migration
-
-# Live TestMigration
-sudo bash linux/invoke-aws-cleanup.sh --phase test-migration
-
-# Live Cutover
-sudo bash linux/invoke-aws-cleanup.sh --phase cutover --report /var/log/migration-cleanup.json
-```
-
-> **Note:** Running directly bypasses the snapshot gate. Ensure you have a recovery point before running live.
 
 ---
 
@@ -319,70 +544,49 @@ sudo bash linux/invoke-aws-cleanup.sh --phase cutover --report /var/log/migratio
 
 | Symptom | Cause | Resolution |
 |---|---|---|
-| Job fails: `SNAPSHOT GATE FAILED` | OS disk does not have `MigrationSnapshot=true` tag | Take a snapshot and apply the tag (Steps 1a–1c) |
-| Job fails: `waagent not found` (Linux) | Azure Linux Agent not installed | `sudo apt-get install walinuxagent` or `sudo dnf install WALinuxAgent` and re-run |
-| Job fails: `WindowsAzureGuestAgent is not Running` | Azure VM Agent stopped or uninstalled | Reinstall from [Microsoft Download Center](https://go.microsoft.com/fwlink/p/?LinkID=394789) |
-| AWS services still present after TestMigration | Services come back on reboot (e.g., MSI re-enables them) | MSI uninstalls run on Cutover — this is expected for TestMigration |
-| Report shows `Error` actions | A specific cleanup step failed | Review the `Detail` field for each Error action; re-run after fixing the underlying issue |
-| Runbook job stuck in `Running` > 15 min | Run Command timed out on VM | VM may be unresponsive; check VM health in Azure Portal |
+| `az vm run-command` times out | VM Agent not ready or VM unresponsive | Check VM health in Portal; verify Agent status = Ready |
+| SSM command fails: `InvalidInstanceId` | Instance not SSM-managed or not Online | Verify `aws ssm describe-instance-information` shows `PingStatus = Online` |
+| Phase 1 SSM output is empty | Script too large for SSM inline parameter | Use SSM Session Manager to connect and run the script interactively |
+| `[FOUND  ]` items remain after Cutover cleanup | Artifact not covered by cleanup script | Remove manually, then update the specific checklist in both scripts |
+| `[WARN ]` heuristic entries in readiness report | Unlisted AWS artifact detected | Review manually — see Heuristic Scans section below; add to checklist if confirmed AWS-specific |
+| AWS services still running after TestMigration | MSI uninstall deferred to Cutover | Expected — MSI uninstalls run only at Cutover phase |
+| `WindowsAzureGuestAgent` check fails | Azure VM Agent stopped or uninstalled | Reinstall from [Microsoft Download Center](https://go.microsoft.com/fwlink/p/?LinkID=394789) |
+| Readiness shows `Errors: 0` but `Found: >0` | Artifacts survived cleanup | Re-run cleanup (non-dry-run) and investigate the specific items in the JSON report |
+| Planned Failover job fails | Replication not healthy / RPO too stale | Wait for replication to return to Healthy; re-check RPO before retrying |
 
 ---
 
-## Quick Reference
+## Log File Reference
 
-```powershell
-# 0. Set subscription and variables
-az account set --subscription "6f9c9b05-871f-4edd-8183-893998be6ec3"
-$RG      = "rg-mig-landing"
-$VM_NAME = "<vm-name>"    # test VM: EC2AMAZ-NJ9HDHK-test  |  prod VM: EC2AMAZ-NJ9HDHK
+Every script run writes two files to **`C:\ProgramData\MigrationLogs\`** on the VM:
 
-# 1. Snapshot the OS disk
-$DISK_ID = az vm show -g $RG -n $VM_NAME --query "storageProfile.osDisk.managedDisk.id" -o tsv
-az snapshot create -g $RG --name "$VM_NAME-pre-cleanup-snapshot" --source $DISK_ID
-az resource tag --ids $DISK_ID --tags MigrationSnapshot=true
+| File pattern | Contents |
+|---|---|
+| `cleanup-<Phase>-<timestamp>.log` | Full console transcript of the cleanup run |
+| `cleanup-<Phase>-<timestamp>.json` | Structured JSON action report (one entry per action: Name, Status, Detail) |
+| `readiness-<Phase>-<timestamp>.log` | Full console transcript of the readiness check |
+| `readiness-<Phase>-<timestamp>.json` | Structured JSON findings report (one entry per check) |
 
-# 2. Dry-run (TestMigration)
-az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@windows/Invoke-AWSCleanup.ps1" --parameters "Phase=TestMigration" "DryRun=true" --query "value[0].message" -o tsv
-
-# 3. Live TestMigration
-az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@windows/Invoke-AWSCleanup.ps1" --parameters "Phase=TestMigration" --query "value[0].message" -o tsv
-
-# 5a. Dry-run (Cutover)
-az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@windows/Invoke-AWSCleanup.ps1" --parameters "Phase=Cutover" "DryRun=true" --query "value[0].message" -o tsv
-
-# 5b. Live Cutover
-az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@windows/Invoke-AWSCleanup.ps1" --parameters "Phase=Cutover" --query "value[0].message" -o tsv
-
-# 6. Readiness check
-az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@validation/Invoke-MigrationReadiness.ps1" --parameters "Phase=Cutover" --query "value[0].message" -o tsv
-
-# List log files on the VM
-az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "Get-ChildItem C:\ProgramData\MigrationLogs\ | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize" --query "value[0].message" -o tsv
-```
+Files are timestamped and never overwritten. A VM that has gone through TestMigration + Cutover will have at least four files.
 
 ---
 
 ## Readiness Script Reference
 
-Documents every check performed by `validation/Invoke-MigrationReadiness.ps1` and what it logs.
-All checks are **read-only** — the script never modifies the VM.
+All checks performed by `validation/Invoke-MigrationReadiness.ps1`. The script is **read-only** — it never modifies the VM.
 
-### Check categories and status codes
+### Status codes
 
 | Status | Meaning |
-|--------|---------|
+|---|---|
 | `[CLEAN  ]` | Artifact not found — expected post-cleanup |
-| `[FOUND  ]` | Artifact present — counts as a failure in Post assertions |
+| `[FOUND  ]` | Artifact present — counted as a failure in Post assertions |
 | `[PASS   ]` | Azure check passed |
 | `[FAIL   ]` | Azure check failed (blocks migration readiness) |
 | `[WARN   ]` | Heuristic scan found something not in the known list — needs manual review |
-| `[INFO   ]` | Informational only (e.g. agent version) |
+| `[INFO   ]` | Informational (e.g. agent version) |
 
----
-
-### Specific checklist (hardcoded)
-
-These are checked by name/path. Result is `FOUND` or `CLEAN`. In Post mode, any `FOUND` item fails the assertion.
+### Specific checklist
 
 #### Services
 
@@ -397,31 +601,31 @@ These are checked by name/path. Result is `FOUND` or `CLEAN`. In Post mode, any 
 | `AWSNitroEnclaves` | AWS Nitro Enclaves |
 | `AWSCodeDeployAgent` | AWS CodeDeploy Agent |
 
-#### Installed Software (uninstall registry)
+#### Installed Software
 
 | Pattern | Description |
 |---|---|
-| `Amazon SSM Agent*` | AWS Systems Manager Agent MSI |
+| `Amazon SSM Agent*` | SSM Agent MSI |
 | `Amazon CloudWatch Agent*` | CloudWatch Agent MSI |
 | `EC2ConfigService*` | EC2Config MSI |
 | `EC2Launch*` | EC2Launch MSI |
 | `Amazon Kinesis Agent*` | Kinesis Agent MSI |
 | `AWS CodeDeploy Agent*` | CodeDeploy Agent MSI |
 | `AWS Command Line Interface*` | AWS CLI |
-| `Amazon Web Services*` | Generic Amazon Web Services entry |
+| `Amazon Web Services*` | Generic AWS entry |
 
-#### Registry keys
+#### Registry Keys
 
 | Key Path | Description |
 |---|---|
-| `HKLM:\SOFTWARE\Amazon\EC2ConfigService` | EC2Config configuration hive |
-| `HKLM:\SOFTWARE\Amazon\EC2Launch` | EC2Launch v1 configuration hive |
-| `HKLM:\SOFTWARE\Amazon\EC2LaunchV2` | EC2Launch v2 configuration hive |
-| `HKLM:\SOFTWARE\Amazon\AmazonCloudWatchAgent` | CloudWatch Agent configuration hive |
-| `HKLM:\SOFTWARE\Amazon\SSM` | SSM Agent configuration hive |
+| `HKLM:\SOFTWARE\Amazon\EC2ConfigService` | EC2Config configuration |
+| `HKLM:\SOFTWARE\Amazon\EC2Launch` | EC2Launch v1 configuration |
+| `HKLM:\SOFTWARE\Amazon\EC2LaunchV2` | EC2Launch v2 configuration |
+| `HKLM:\SOFTWARE\Amazon\AmazonCloudWatchAgent` | CloudWatch Agent configuration |
+| `HKLM:\SOFTWARE\Amazon\SSM` | SSM Agent configuration |
 | `HKLM:\SOFTWARE\Amazon\PVDriver` | **Intentionally retained** — PV driver; do not remove |
 
-#### Filesystem paths
+#### Filesystem Paths
 
 | Path | Description |
 |---|---|
@@ -431,19 +635,19 @@ These are checked by name/path. Result is `FOUND` or `CLEAN`. In Post mode, any 
 | `%SystemRoot%\System32\config\systemprofile\.aws` | SYSTEM-context AWS credentials |
 | `%SystemRoot%\ServiceProfiles\NetworkService\.aws` | NetworkService-context AWS credentials |
 
-#### Environment variables (machine-scope)
+#### Environment Variables
 
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_DEFAULT_REGION`,
 `AWS_REGION`, `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`
 
-#### Hosts file entries
+#### Hosts File Entries
 
 | Pattern | Description |
 |---|---|
 | `169\.254\.169\.254.*ec2\.internal` | EC2 metadata hostname alias |
 | `instance-data\.ec2\.internal` | EC2 instance-data alias |
 
-#### Scheduled tasks
+#### Scheduled Tasks
 
 | Task | Path |
 |---|---|
@@ -451,76 +655,26 @@ These are checked by name/path. Result is `FOUND` or `CLEAN`. In Post mode, any 
 | `AmazonCloudWatchAutoUpdate` | `\Amazon\AmazonCloudWatch\` |
 | Any task under `\Amazon\*` | Dynamic scan |
 
-#### Azure readiness checks
+#### Azure Readiness Checks
 
 | Check | Pass condition |
 |---|---|
 | `WindowsAzureGuestAgent` service | Running, StartType = Automatic |
 | Azure IMDS (`169.254.169.254`) | Responds with `provider = Microsoft.Compute` |
 
----
+### Heuristic scans
 
-### Heuristic scans (dynamic — logs as `[WARN ]`)
+These catch **unknown or unlisted** AWS artifacts. They appear as `[WARN ]` and do not fail the Post assertion, but every warning should be reviewed manually.
 
-These scans catch **unknown or unlisted** AWS artifacts. They do not fail the Post assertion but appear in the report for manual review. Use them to identify novel artifacts on VMs that have custom tooling not covered by the specific checklist.
+| Scan | What it looks for |
+|---|---|
+| **Services** | All services whose `DisplayName` or `Description` matches `amazon`, `aws`, `ec2`, or `ssm` — excluding the 8 in the specific list |
+| **Registry** | All sub-keys directly under `HKLM:\SOFTWARE\Amazon\` not in the specific list (excluding `PVDriver`) |
+| **Installed Software** | All programs in the uninstall registry whose `DisplayName` matches `\bAmazon\b`, `\bAWS\b`, or `\bEC2\b` — excluding the 8 in the specific list |
+| **Filesystem** | All subdirectories under `C:\Program Files\Amazon\` not in the specific list; flags empty root at Cutover phase |
+| **Scheduled Tasks** | Any task under `\Amazon\*` not in the specific list |
 
-| Scan | What it looks for | Trigger |
-|---|---|---|
-| **Services (Heuristic)** | All services whose `DisplayName` or `Description` matches `amazon`, `aws`, `ec2`, or `ssm` (case-insensitive) — excluding the 8 already in the specific list | Any non-standard AWS service registration |
-| **Registry (Heuristic)** | All sub-keys directly under `HKLM:\SOFTWARE\Amazon\` not in the specific list (excluding `PVDriver`) | Custom tools that write to the Amazon registry hive |
-| **Installed Software (Heuristic)** | All programs in the uninstall registry whose `DisplayName` matches `\bAmazon\b`, `\bAWS\b`, or `\bEC2\b` — excluding the 8 already in the specific list | Bundled or third-party AWS-integrated software |
-| **Filesystem (Heuristic)** | All subdirectories under `C:\Program Files\Amazon\` not in the specific list; also flags an empty `C:\Program Files\Amazon\` root at Cutover phase | Custom agent installations |
-| **Scheduled Tasks (Heuristic)** | Any task under the `\Amazon\*` task folder not in the specific list | Agent update or reporting tasks |
-
-> **Workflow:** After a readiness check, search the report for `"Status": "Warning"`. For each warning, determine whether the artifact is AWS-specific. If yes, remove it manually and add it to the specific checklist in both `Invoke-MigrationReadiness.ps1` and `Invoke-AWSCleanup.ps1` so future VMs are handled automatically.
-
----
-
-## Log Files
-
-Every script run writes two files to **`C:\ProgramData\MigrationLogs\`** on the VM:
-
-| File | Contents |
-|------|----------|
-| `cleanup-<Phase>-<timestamp>.log` | Full console transcript — every log line printed during the cleanup run |
-| `cleanup-<Phase>-<timestamp>.json` | Structured JSON action report (one entry per action with Name, Status, Detail) |
-| `readiness-<Phase>-<timestamp>.log` | Full console transcript of the readiness check run |
-| `readiness-<Phase>-<timestamp>.json` | Structured JSON findings report |
-
-Files are timestamped and never overwritten — each run appends a new pair. For a VM that has gone through Test + Cutover, you will have four files minimum.
-
-### Retrieving logs from the VM
-
-**List all migration logs:**
-
-```powershell
-az vm run-command invoke `
-  -g <resource-group> -n <vm-name> `
-  --command-id RunPowerShellScript `
-  --scripts "Get-ChildItem C:\ProgramData\MigrationLogs\ | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize" `
-  --query "value[0].message" -o tsv
-```
-
-**Read a specific log file:**
-
-```powershell
-az vm run-command invoke `
-  -g <resource-group> -n <vm-name> `
-  --command-id RunPowerShellScript `
-  --scripts "Get-Content 'C:\ProgramData\MigrationLogs\cleanup-Cutover-<timestamp>.log'" `
-  --query "value[0].message" -o tsv
-```
-
-**Copy logs to local machine** (requires VM to be reachable via WinRM or Bastion file copy):
-
-```powershell
-# Via Invoke-Command (if WinRM is open)
-$session = New-PSSession -ComputerName <vm-ip> -Credential (Get-Credential)
-Copy-Item -FromSession $session `
-  -Path 'C:\ProgramData\MigrationLogs\*' `
-  -Destination '.\vm-logs\' -Recurse
-Remove-PSSession $session
-```
+> **Workflow:** After any readiness check, search the JSON report for `"Status": "Warning"`. For each warning, determine whether the artifact is AWS-specific. If yes, remove manually and add to the specific checklist in both `Invoke-MigrationReadiness.ps1` and `Invoke-AWSCleanup.ps1`.
 
 ---
 
@@ -530,3 +684,5 @@ Remove-PSSession $session
 |---|---|
 | [README.md](README.md) | Technical reference — script internals, JSON schema, setup details |
 | [tests/TESTING.md](tests/TESTING.md) | Test strategy, test log, known issues found during development |
+
+
