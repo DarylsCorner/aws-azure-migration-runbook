@@ -205,6 +205,15 @@ A passing post-audit shows:
   Azure checks passed  : 2
 ```
 
+Both the cleanup and readiness scripts print the paths of their output files at the end of every run:
+
+```
+Report     : C:\ProgramData\MigrationLogs\readiness-Cutover-20260313-021606.json
+Transcript : C:\ProgramData\MigrationLogs\readiness-Cutover-20260313-021606.log
+```
+
+See the **Log Files** section below for how to list and retrieve these from the VM.
+
 If any `[WARN ]` lines appear under **Heuristic Scans**, review them manually — they flag unlisted AWS artifacts (unknown services, registry keys, software, or directories matching `Amazon`/`AWS`/`EC2` keywords) that were not in the standard checklist. Decide whether each one should be removed before completing the migration.
 
 ### Linux
@@ -434,6 +443,54 @@ These scans catch **unknown or unlisted** AWS artifacts. They do not fail the Po
 | **Scheduled Tasks (Heuristic)** | Any task under the `\Amazon\*` task folder not in the specific list | Agent update or reporting tasks |
 
 > **Workflow:** After a readiness check, search the report for `"Status": "Warning"`. For each warning, determine whether the artifact is AWS-specific. If yes, remove it manually and add it to the specific checklist in both `Invoke-MigrationReadiness.ps1` and `Invoke-AWSCleanup.ps1` so future VMs are handled automatically.
+
+---
+
+## Log Files
+
+Every script run writes two files to **`C:\ProgramData\MigrationLogs\`** on the VM:
+
+| File | Contents |
+|------|----------|
+| `cleanup-<Phase>-<timestamp>.log` | Full console transcript — every log line printed during the cleanup run |
+| `cleanup-<Phase>-<timestamp>.json` | Structured JSON action report (one entry per action with Name, Status, Detail) |
+| `readiness-<Phase>-<timestamp>.log` | Full console transcript of the readiness check run |
+| `readiness-<Phase>-<timestamp>.json` | Structured JSON findings report |
+
+Files are timestamped and never overwritten — each run appends a new pair. For a VM that has gone through Test + Cutover, you will have four files minimum.
+
+### Retrieving logs from the VM
+
+**List all migration logs:**
+
+```powershell
+az vm run-command invoke `
+  -g <resource-group> -n <vm-name> `
+  --command-id RunPowerShellScript `
+  --scripts "Get-ChildItem C:\ProgramData\MigrationLogs\ | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize" `
+  --query "value[0].message" -o tsv
+```
+
+**Read a specific log file:**
+
+```powershell
+az vm run-command invoke `
+  -g <resource-group> -n <vm-name> `
+  --command-id RunPowerShellScript `
+  --scripts "Get-Content 'C:\ProgramData\MigrationLogs\cleanup-Cutover-<timestamp>.log'" `
+  --query "value[0].message" -o tsv
+```
+
+**Copy logs to local machine** (requires VM to be reachable via WinRM or Bastion file copy):
+
+```powershell
+# Via Invoke-Command (if WinRM is open)
+$session = New-PSSession -ComputerName <vm-ip> -Credential (Get-Credential)
+Copy-Item -FromSession $session `
+  -Path 'C:\ProgramData\MigrationLogs\*' `
+  -Destination '.\vm-logs\' -Recurse
+Remove-PSSession $session
+```
 
 ---
 

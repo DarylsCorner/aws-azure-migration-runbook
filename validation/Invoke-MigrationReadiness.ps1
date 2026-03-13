@@ -46,10 +46,16 @@ param(
 
 # Resolve ReportPath default here (not in param block) so $PSScriptRoot empty-string
 # does not cause a binding failure when run via az vm run-command / Azure Automation.
-if (-not $ReportPath) {
-    $defaultDir = if ($PSScriptRoot) { $PSScriptRoot } else { $env:TEMP }
-    $ReportPath = Join-Path $defaultDir "readiness-report_$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+$script:LogDir = 'C:\ProgramData\MigrationLogs'
+if (-not (Test-Path $script:LogDir)) {
+    New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null
 }
+$script:RunStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+if (-not $ReportPath) {
+    $ReportPath = Join-Path $script:LogDir "readiness-$Phase-$($script:RunStamp).json"
+}
+$TranscriptPath = Join-Path $script:LogDir "readiness-$Phase-$($script:RunStamp).log"
+Start-Transcript -Path $TranscriptPath -Append -Force | Out-Null
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
@@ -558,5 +564,8 @@ try {
 } catch {
     Write-Warning "Could not write report: $($_.Exception.Message)"
 }
+
+Write-Host "Transcript: $TranscriptPath"
+Stop-Transcript | Out-Null
 
 return $report
