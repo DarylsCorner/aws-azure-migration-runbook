@@ -651,11 +651,16 @@ $reportJson = $report | ConvertTo-Json -Depth 5 -Compress
 
 # Write to file
 try {
-    # Re-derive the path in case $script: scope was lost when running via
-    # az vm run-command (which may wrap the script inside an outer runner,
-    # causing $script: to refer to a different scope at execution time).
-    $effectiveReportPath = if ($script:ReportPath) { $script:ReportPath } else {
-        Join-Path $script:LogDir "cleanup-$Phase-$($script:RunStamp).json"
+    # Avoid $script: scope here — when az vm run-command wraps the injected
+    # script in an outer runner, $script: may refer to the runner's scope where
+    # none of our variables were set.  Use only $Phase (a bound parameter) and
+    # Get-Date (a cmdlet) — both are always available regardless of scope context.
+    $effectiveReportPath = if ($script:ReportPath) {
+        $script:ReportPath
+    } elseif ($ReportPath) {
+        $ReportPath
+    } else {
+        "C:\ProgramData\MigrationLogs\cleanup-$Phase-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
     }
     $reportDir = Split-Path $effectiveReportPath -Parent
     if (-not (Test-Path $reportDir)) {
