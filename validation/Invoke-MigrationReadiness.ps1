@@ -51,8 +51,8 @@ if (-not (Test-Path $script:LogDir)) {
     New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null
 }
 $script:RunStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-if (-not $ReportPath) {
-    $ReportPath = Join-Path $script:LogDir "readiness-$Phase-$($script:RunStamp).json"
+$script:ReportPath = if ($ReportPath) { $ReportPath } else {
+    Join-Path $script:LogDir "readiness-$Phase-$($script:RunStamp).json"
 }
 $TranscriptPath = Join-Path $script:LogDir "readiness-$Phase-$($script:RunStamp).log"
 Start-Transcript -Path $TranscriptPath -Append -Force | Out-Null
@@ -580,12 +580,12 @@ $report = @{
 }
 
 try {
-    $reportDir = Split-Path $ReportPath -Parent
+    $reportDir = Split-Path $script:ReportPath -Parent
     if (-not (Test-Path $reportDir)) {
         New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
     }
-    $report | ConvertTo-Json -Depth 5 | Set-Content -Path $ReportPath -Encoding UTF8
-    Write-Host "Report: $ReportPath"
+    $report | ConvertTo-Json -Depth 5 | Set-Content -Path $script:ReportPath -Encoding UTF8
+    Write-Host "Report: $script:ReportPath"
 } catch {
     Write-Warning "Could not write report: $($_.Exception.Message)"
 }
