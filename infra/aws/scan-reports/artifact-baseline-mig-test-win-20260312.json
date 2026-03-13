@@ -5,22 +5,22 @@
     "instanceName": "mig-test-win",
     "privateIp": "10.10.1.17",
     "os": "Windows Server 2022 Datacenter",
-    "phase": "pre-plant-baseline",
-    "description": "Real AWS artifacts present on source EC2 before dirty-box plant and before replication re-enabled. Used as comparison target after cutover-phase cleanup."
+    "phase": "post-plant-baseline",
+    "description": "Real AWS artifacts present on source EC2 PLUS dirty-box planted artifacts. Replication is active — this is the full set of artifacts that should appear on the test failover VM and must be removed by the Cutover-phase cleanup."
   },
   "services": [
-    { "name": "AmazonSSMAgent",        "status": "Running", "startType": "Automatic", "expectRemovedBy": "Cutover" },
-    { "name": "AWSLiteAgent",          "status": "Stopped", "startType": "Automatic", "expectRemovedBy": "Cutover" },
-    { "name": "AmazonCloudWatchAgent", "status": null,      "startType": null,        "expectRemovedBy": null,     "note": "ABSENT — not installed" },
-    { "name": "AWSCodeDeployAgent",    "status": null,      "startType": null,        "expectRemovedBy": null,     "note": "ABSENT — not installed" },
-    { "name": "Ec2Config",             "status": null,      "startType": null,        "expectRemovedBy": null,     "note": "ABSENT — not installed" }
+    { "name": "AmazonSSMAgent",        "status": "Running",  "startType": "Automatic", "source": "real",    "expectRemovedBy": "Cutover" },
+    { "name": "AWSLiteAgent",          "status": "Stopped",  "startType": "Automatic", "source": "real",    "expectRemovedBy": "Cutover" },
+    { "name": "AmazonCloudWatchAgent", "status": "Stopped",  "startType": "Disabled",  "source": "planted", "expectRemovedBy": "Cutover" },
+    { "name": "AWSCodeDeployAgent",    "status": "Stopped",  "startType": "Disabled",  "source": "planted", "expectRemovedBy": "Cutover" },
+    { "name": "Ec2Config",             "status": null,       "startType": null,         "source": null,      "expectRemovedBy": null,     "note": "ABSENT — not installed" }
   ],
   "registry": [
-    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2ConfigService",       "present": true,  "expectRemovedBy": "Cutover" },
-    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2Launch",              "present": true,  "expectRemovedBy": "Cutover" },
-    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2LaunchV2",            "present": false, "expectRemovedBy": null },
-    { "path": "HKLM:\\SOFTWARE\\Amazon\\AmazonCloudWatchAgent",  "present": false, "expectRemovedBy": null },
-    { "path": "HKLM:\\SOFTWARE\\Amazon\\SSM",                    "present": false, "expectRemovedBy": null }
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2ConfigService",       "present": true, "source": "real",    "expectRemovedBy": "Cutover" },
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2Launch",              "present": true, "source": "real",    "expectRemovedBy": "Cutover" },
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\EC2LaunchV2",            "present": true, "source": "planted", "expectRemovedBy": "Cutover" },
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\AmazonCloudWatchAgent",  "present": true, "source": "planted", "expectRemovedBy": "Cutover" },
+    { "path": "HKLM:\\SOFTWARE\\Amazon\\SSM",                    "present": true, "source": "planted", "expectRemovedBy": "Cutover" }
   ],
   "installedSoftware": [
     { "displayName": "Amazon SSM Agent",    "expectRemovedBy": "Cutover" },
@@ -29,20 +29,23 @@
     { "displayName": "AWS PV Drivers",      "expectRemovedBy": "DO NOT REMOVE", "note": "Boot-critical paravirtual drivers — Azure Migrate replaces during replication. Cleanup script intentionally skips these." }
   ],
   "environmentVariables": [
-    { "name": "AWS_DEFAULT_REGION",    "present": false },
-    { "name": "AWS_REGION",            "present": false },
-    { "name": "AWS_PROFILE",           "present": false },
-    { "name": "AWS_ACCESS_KEY_ID",     "present": false },
-    { "name": "AWS_SECRET_ACCESS_KEY", "present": false },
-    { "name": "AWS_CONFIG_FILE",       "present": false }
+    { "name": "AWS_DEFAULT_REGION",    "present": true,  "source": "planted", "expectRemovedBy": "Cutover" },
+    { "name": "AWS_REGION",            "present": true,  "source": "planted", "expectRemovedBy": "Cutover" },
+    { "name": "AWS_PROFILE",           "present": true,  "source": "planted", "expectRemovedBy": "Cutover" },
+    { "name": "AWS_ACCESS_KEY_ID",     "present": false, "source": null },
+    { "name": "AWS_SECRET_ACCESS_KEY", "present": false, "source": null },
+    { "name": "AWS_CONFIG_FILE",       "present": true,  "source": "planted", "expectRemovedBy": "Cutover" }
   ],
   "scheduledTasks": [],
   "directories": [
-    { "path": "C:\\Program Files\\Amazon",       "present": true,  "expectRemovedBy": "Cutover" },
-    { "path": "C:\\Program Files (x86)\\Amazon", "present": false, "expectRemovedBy": null }
+    { "path": "C:\\Program Files\\Amazon",                                          "present": true, "source": "real",    "expectRemovedBy": "Cutover" },
+    { "path": "C:\\Program Files\\Amazon\\AmazonCloudWatchAgent",                   "present": true, "source": "planted", "expectRemovedBy": "Cutover" },
+    { "path": "C:\\Windows\\System32\\config\\systemprofile\\.aws",                 "present": true, "source": "planted", "expectRemovedBy": "Cutover" },
+    { "path": "C:\\Windows\\ServiceProfiles\\NetworkService\\.aws",                 "present": true, "source": "planted", "expectRemovedBy": "Cutover" },
+    { "path": "C:\\Program Files (x86)\\Amazon",                                   "present": false, "source": null }
   ],
   "hostsFile": [
-    { "pattern": "ec2|amazonaws|aws", "present": false, "note": "No AWS hosts entries found" }
+    { "entry": "169.254.169.254  instance-data.ec2.internal", "present": true, "source": "planted", "expectRemovedBy": "Cutover" }
   ],
   "postCleanupExpectations": {
     "TestMigration": {
