@@ -11,16 +11,18 @@ This guide is written for the operator who will execute the migration, not the e
 
 | Requirement | How to verify |
 |---|---|
-| Azure Automation Account provisioned | `az automation account show -g rg-migration-test -n aa-migration-test` |
-| Automation Account has system-assigned Managed Identity | Check Identity tab in Azure Portal, or see README Setup section |
-| Managed Identity has `Virtual Machine Contributor` on the VM's resource group | `az role assignment list --assignee <mi-principal-id>` |
 | `az` CLI installed and logged in | `az account show` |
-
-If the Automation Account is not yet provisioned, see the **Setup** section in [README.md](README.md) or run:
+| Correct subscription active | `az account set --subscription "6f9c9b05-871f-4edd-8183-893998be6ec3"` |
+| Test or production VM is running in Azure | Portal → Virtual Machines → VM shows **Running** |
+| Azure VM Agent is installed on the VM | Portal → VM → Properties → Agent status: **Ready** |
 
 ```powershell
-.\tests\Setup-AutomationInfra.ps1
+# Set the correct subscription before running any az commands
+az account set --subscription "6f9c9b05-871f-4edd-8183-893998be6ec3"
+az account show --query "{Sub:name, ID:id}" -o table
 ```
+
+> **Automation Account path:** If your organisation uses Azure Automation, see `tests/Invoke-RunbookTest.ps1` and `tests/Setup-AutomationInfra.ps1`. That path adds a snapshot gate, centralized job history, and managed identity execution. The steps below use `az vm run-command` which is simpler and suitable for hands-on operator-led migrations.
 
 ---
 
@@ -39,72 +41,71 @@ Always run `TestMigration` first on the test VM before touching the production c
 
 ## Step 1 — Take a Snapshot (Required)
 
-The runbook will **refuse to run** unless the VM's OS disk has been snapshotted and tagged.
-This is a safety gate that ensures you have a recovery point before any changes are made.
+Take a snapshot of the VM's OS disk before any changes are made. This is your rollback point.
 
 ### 1a. Find the OS disk ID
 
-```bash
-DISK_ID=$(az vm show \
-  --resource-group <your-resource-group> \
-  --name <vm-name> \
-  --query "storageProfile.osDisk.managedDisk.id" \
-  --output tsv)
+```powershell
+$VM_NAME = "<vm-name>"          # e.g. EC2AMAZ-NJ9HDHK-test
+$RG      = "rg-mig-landing"
 
-echo $DISK_ID
+$DISK_ID = az vm show `
+  --resource-group $RG `
+  --name $VM_NAME `
+  --query "storageProfile.osDisk.managedDisk.id" `
+  --output tsv
+
+Write-Host $DISK_ID
 ```
 
 ### 1b. Create a snapshot
 
-```bash
-az snapshot create \
-  --resource-group <your-resource-group> \
-  --name <vm-name>-pre-cleanup-snapshot \
-  --source "$DISK_ID"
+```powershell
+az snapshot create `
+  --resource-group $RG `
+  --name "$VM_NAME-pre-cleanup-snapshot" `
+  --source $DISK_ID
 ```
 
-This typically completes in 1–3 minutes. You can verify it in the Azure Portal under **Snapshots** in the resource group.
+Typically completes in 1–3 minutes. Verify in Portal under **Snapshots** in the resource group.
 
-> **Tip:** If Azure Migrate already created a restore point during replication, you may use that as your recovery point and skip directly to step 1c. Confirm with your Azure Migrate administrator.
+> **Tip:** If Azure Migrate already created a restore point during replication, you may use that as your recovery point. Confirm with your Azure Migrate administrator.
 
 ### 1c. Tag the disk
 
-This tag signals to the runbook that a recovery point exists and cleanup may proceed.
+This tag signals to the Automation Runbook path that a recovery point exists. Not enforced when running via `az vm run-command` directly, but apply it anyway as a record.
 
-```bash
-az resource tag \
-  --ids "$DISK_ID" \
+```powershell
+az resource tag `
+  --ids $DISK_ID `
   --tags MigrationSnapshot=true
+
+# Verify
+az resource show --ids $DISK_ID --query tags -o json
+# Expected: { "MigrationSnapshot": "true" }
 ```
-
-Verify the tag was applied:
-
-```bash
-az resource show --ids "$DISK_ID" --query tags
-# Expected output: { "MigrationSnapshot": "true" }
-```
-
-> **Important:** Use `az resource tag`, not `az disk update --set tags...`. The `--set` flag silently fails to write a string-typed tag value in some CLI versions.
 
 ---
 
 ## Step 2 — Dry Run (Recommended)
 
-Run in dry-run mode first. No changes are made to the VM — the runbook reports what **would** happen.
-This lets you review the action list and catch anything unexpected before committing.
+Run in dry-run mode first. No changes are made to the VM — the script reports what **would** happen.
 
 ```powershell
-.\tests\Invoke-RunbookTest.ps1 `
-  -VMName        <vm-name> `
-  -ResourceGroup <your-resource-group> `
-  -Phase         TestMigration `
-  -DryRun `
-  -RequireSnapshotTag $true
+$VM_NAME = "<vm-name>"          # e.g. EC2AMAZ-NJ9HDHK-test
+$RG      = "rg-mig-landing"
+
+az vm run-command invoke `
+  -g $RG -n $VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "@windows/Invoke-AWSCleanup.ps1" `
+  --parameters "Phase=TestMigration" "DryRun=true" `
+  --query "value[0].message" -o tsv
 ```
 
-Review the output. Look for any actions with `Status: Error` — investigate those before proceeding.
+Review the output. Look for any lines with `[ERROR]` — investigate those before proceeding.
 
-A clean dry-run on a freshly migrated VM typically shows **all Skipped** (no AWS software installed yet by Azure Migrate). On a real AWS-origin VM you will see `DryRun` entries for each component that would be removed.
+A clean dry-run on a freshly migrated VM typically shows **many Skipped** plus **DryRun** entries for each AWS component that would be removed. No `[ERROR]` lines means the script is safe to run live.
 
 ---
 
@@ -113,20 +114,31 @@ A clean dry-run on a freshly migrated VM typically shows **all Skipped** (no AWS
 Once the dry-run looks correct, run live:
 
 ```powershell
-.\tests\Invoke-RunbookTest.ps1 `
-  -VMName        <vm-name> `
-  -ResourceGroup <your-resource-group> `
-  -Phase         TestMigration `
-  -RequireSnapshotTag $true
+az vm run-command invoke `
+  -g $RG -n $VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "@windows/Invoke-AWSCleanup.ps1" `
+  --parameters "Phase=TestMigration" `
+  --query "value[0].message" -o tsv
 ```
 
-**Expected outcome:** All AWS services stopped and disabled, credentials/env vars removed, cloud-init reconfigured. MSI/package uninstalls are deferred to the Cutover phase.
+**Expected outcome:** All AWS services stopped and disabled, credentials and env vars removed. MSI/package uninstalls are deferred to the Cutover phase.
 
-After the job completes, validate the VM is healthy:
+After the run, check the summary lines at the end of the output:
 
-- Confirm the application still starts correctly
-- Check no AWS services are running: `Get-Service | Where Name -like 'amazon*'` (Windows) or `systemctl list-units | grep amazon` (Linux)
-- Review the JSON report saved in the runbook output
+```
+  Total   : <n>
+  Done    : <n>    ← actions completed
+  Skipped : <n>    ← components not present (fine)
+  Errors  : 0      ← must be 0
+```
+
+Then confirm the VM is still healthy:
+- RDP or Bastion in and confirm the application starts correctly
+- No AWS services running: paste this into the VM or run via run-command:
+  ```powershell
+  Get-Service | Where-Object { $_.DisplayName -match 'amazon|aws|ec2' }
+  ```
 
 ---
 
@@ -147,29 +159,36 @@ If the application is broken, **restore from the snapshot** (see Rollback below)
 
 When you are ready for final cutover:
 
-1. **Azure Migrate: trigger final replication sync** — ensures the production VM has the latest data
-2. **Azure Migrate: Migrate** — creates the production VM
-3. **Repeat Steps 1a–1c** on the production VM's OS disk (take a new snapshot, apply the tag)
-4. Run the Cutover phase:
+1. **Portal: Planned Failover** — ASR shuts down the source VM, replicates the final delta, and creates the production VM in Azure
+2. Wait for the production VM to appear in `rg-mig-landing` and reach **Running** state
+3. **Repeat Steps 1a–1c** on the production VM's OS disk (snapshot + tag)
+4. Set `$VM_NAME` to the production VM name, then run the Cutover dry-run:
 
 ```powershell
-.\tests\Invoke-RunbookTest.ps1 `
-  -VMName        <vm-name> `
-  -ResourceGroup <your-resource-group> `
-  -Phase         Cutover `
-  -DryRun `
-  -RequireSnapshotTag $true
+$VM_NAME = "<production-vm-name>"   # the VM created by Planned Failover
+$RG      = "rg-mig-landing"
+
+# Dry-run first
+az vm run-command invoke `
+  -g $RG -n $VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "@windows/Invoke-AWSCleanup.ps1" `
+  --parameters "Phase=Cutover" "DryRun=true" `
+  --query "value[0].message" -o tsv
 ```
 
-Review the dry-run, then run live:
+Review the dry-run output — confirm the expected MSI uninstalls and service deletions appear. Then run live:
 
 ```powershell
-.\tests\Invoke-RunbookTest.ps1 `
-  -VMName        <vm-name> `
-  -ResourceGroup <your-resource-group> `
-  -Phase         Cutover `
-  -RequireSnapshotTag $true
+az vm run-command invoke `
+  -g $RG -n $VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "@windows/Invoke-AWSCleanup.ps1" `
+  --parameters "Phase=Cutover" `
+  --query "value[0].message" -o tsv
 ```
+
+Expected summary: `Errors: 0`. Proceed to Step 6.
 
 ---
 
@@ -312,22 +331,33 @@ sudo bash linux/invoke-aws-cleanup.sh --phase cutover --report /var/log/migratio
 ## Quick Reference
 
 ```powershell
-# ---------- One-liner equivalents ----------
+# 0. Set subscription and variables
+az account set --subscription "6f9c9b05-871f-4edd-8183-893998be6ec3"
+$RG      = "rg-mig-landing"
+$VM_NAME = "<vm-name>"    # test VM: EC2AMAZ-NJ9HDHK-test  |  prod VM: EC2AMAZ-NJ9HDHK
 
-# TestMigration dry-run
-.\tests\Invoke-RunbookTest.ps1 -VMName <vm> -Phase TestMigration -DryRun -RequireSnapshotTag $true
+# 1. Snapshot the OS disk
+$DISK_ID = az vm show -g $RG -n $VM_NAME --query "storageProfile.osDisk.managedDisk.id" -o tsv
+az snapshot create -g $RG --name "$VM_NAME-pre-cleanup-snapshot" --source $DISK_ID
+az resource tag --ids $DISK_ID --tags MigrationSnapshot=true
 
-# TestMigration live
-.\tests\Invoke-RunbookTest.ps1 -VMName <vm> -Phase TestMigration -RequireSnapshotTag $true
+# 2. Dry-run (TestMigration)
+az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@windows/Invoke-AWSCleanup.ps1" --parameters "Phase=TestMigration" "DryRun=true" --query "value[0].message" -o tsv
 
-# Cutover dry-run
-.\tests\Invoke-RunbookTest.ps1 -VMName <vm> -Phase Cutover -DryRun -RequireSnapshotTag $true
+# 3. Live TestMigration
+az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@windows/Invoke-AWSCleanup.ps1" --parameters "Phase=TestMigration" --query "value[0].message" -o tsv
 
-# Cutover live
-.\tests\Invoke-RunbookTest.ps1 -VMName <vm> -Phase Cutover -RequireSnapshotTag $true
+# 5a. Dry-run (Cutover)
+az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@windows/Invoke-AWSCleanup.ps1" --parameters "Phase=Cutover" "DryRun=true" --query "value[0].message" -o tsv
 
-# Tag a disk (after taking snapshot)
-az resource tag --ids $(az vm show -g <rg> -n <vm> --query "storageProfile.osDisk.managedDisk.id" -o tsv) --tags MigrationSnapshot=true
+# 5b. Live Cutover
+az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@windows/Invoke-AWSCleanup.ps1" --parameters "Phase=Cutover" --query "value[0].message" -o tsv
+
+# 6. Readiness check
+az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "@validation/Invoke-MigrationReadiness.ps1" --parameters "Phase=Cutover" --query "value[0].message" -o tsv
+
+# List log files on the VM
+az vm run-command invoke -g $RG -n $VM_NAME --command-id RunPowerShellScript --scripts "Get-ChildItem C:\ProgramData\MigrationLogs\ | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize" --query "value[0].message" -o tsv
 ```
 
 ---
