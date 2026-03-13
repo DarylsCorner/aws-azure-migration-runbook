@@ -25,10 +25,10 @@
 
 .EXAMPLE
     # Before running the cleanup runbook:
-    .\Invoke-WorkloadCheck.ps1 -Phase Before
+    .\Invoke-WorkloadCheck-SSM.ps1 -Phase Before
 
     # After running the cleanup runbook:
-    .\Invoke-WorkloadCheck.ps1 -Phase After
+    .\Invoke-WorkloadCheck-SSM.ps1 -Phase After
 #>
 [CmdletBinding()]
 param(

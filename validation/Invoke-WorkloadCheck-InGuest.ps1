@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     In-guest workload health check for Windows. Mirrors the checks performed
-    by infra/aws/Invoke-WorkloadCheck.ps1 but runs inside the Azure VM via
+    by infra/aws/Invoke-WorkloadCheck-SSM.ps1 but runs inside the Azure VM via
     az vm run-command rather than via SSM.
 
 .DESCRIPTION

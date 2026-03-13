@@ -19,8 +19,8 @@ infra/aws/scan-reports/
 # Pre-scan reports — contain discovery output, not source code
 infra/aws/scan-reports/
 
-# Workload health-check snapshots
-infra/aws/workload-reports/
+# Workload health-check snapshots — tracked as migration audit evidence
+# infra/aws/workload-reports/
 infra/aws/appliance-vm.env
 infra/aws/repl-appliance-vm.env
 
