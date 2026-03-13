@@ -598,7 +598,9 @@ If any `[FOUND  ]` or `[WARN ]` items remain, **do not complete the cutover** un
 
 ---
 
-## Phase 11 — Retrieve and Review Logs from Production VM
+## Phase 11 — Confirm Logs Written to Production VM
+
+The pass/fail results were already visible in the live Phase 10b and 10c output — this step confirms the files were persisted on disk.
 
 ### List log files
 
@@ -611,29 +613,23 @@ az vm run-command invoke `
   --query "value[0].message" -o tsv
 ```
 
-### Read most recent readiness report
+**Expected:** Five or more files — `cleanup-TestMigration-*`, `cleanup-Cutover-*`, `readiness-TestMigration-*` (two: source baseline + post-cleanup), `readiness-Cutover-*`.
 
-```powershell
-az vm run-command invoke `
-  --resource-group $RG `
-  --name $PROD_VM_NAME `
-  --command-id RunPowerShellScript `
-  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\readiness-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
-  --query "value[0].message" -o tsv
-```
-
-### Read most recent cleanup report
-
-```powershell
-az vm run-command invoke `
-  --resource-group $RG `
-  --name $PROD_VM_NAME `
-  --command-id RunPowerShellScript `
-  --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
-  --query "value[0].message" -o tsv
-```
-
-**Final validation:** Compare this readiness report against the Phase 1 pre-failover baseline. Every `[FOUND  ]` item from the baseline should now be `[CLEAN  ]` in this report.
+> **If something looked wrong in Phase 10b or 10c**, use these commands to read the full reports for investigation:
+>
+> ```powershell
+> # Most recent readiness report
+> az vm run-command invoke --resource-group $RG --name $PROD_VM_NAME `
+>   --command-id RunPowerShellScript `
+>   --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\readiness-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+>   --query "value[0].message" -o tsv
+>
+> # Most recent cleanup report
+> az vm run-command invoke --resource-group $RG --name $PROD_VM_NAME `
+>   --command-id RunPowerShellScript `
+>   --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
+>   --query "value[0].message" -o tsv
+> ```
 
 ### Remove migration log directory (manual)
 
