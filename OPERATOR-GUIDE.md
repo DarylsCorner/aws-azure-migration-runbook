@@ -120,6 +120,8 @@ Phase 12 Complete cutover (Portal)
 Paste this entire block into your PowerShell terminal at the start of every session.
 You will be prompted for all site-specific values.
 
+> **Note:** All `$variables` are in-memory only. If you restart or open a new terminal, re-run this entire Phase 0 block before continuing.
+
 ```powershell
 # ── Azure ─────────────────────────────────────────────────────────────────────
 if ([string]::IsNullOrWhiteSpace($SUBSCRIPTION_ID)) {
