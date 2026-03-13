@@ -163,56 +163,55 @@ aws ssm describe-instance-information `
 
 ---
 
-## Phase 1 — Pre-Failover Baseline (Source VM in AWS, via SSM)
+## Phase 1 — Pre-Failover Baseline (Source VM in AWS)
 
 Run the readiness script against the **source VM while it is still in AWS**. This captures a full inventory of every AWS artifact on the machine before anything is touched. Save this output — it is your reference for what was present and what needs to be removed.
 
-```powershell
-# Read the local script and send it to the source VM via SSM
-$ReadinessScript = Get-Content "validation\Invoke-MigrationReadiness.ps1" -Raw
+> **Note:** The readiness script is too large to pass inline via `aws ssm send-command`. Use one of the two approaches below.
 
-$SSM_CMD_ID = (aws ssm send-command `
-  --instance-ids $SOURCE_INSTANCE_ID `
-  --document-name "AWS-RunPowerShellScript" `
-  --parameters "commands=[$ReadinessScript]" `
-  --comment "Pre-failover readiness baseline" `
-  --region $AWS_REGION `
-  --query "Command.CommandId" `
-  --output text)
+### Option A — SSM Session Manager (interactive, no RDP needed)
 
-Write-Host "SSM Command ID: $SSM_CMD_ID"
-```
-
-Wait for the command to finish (typically 30–60 seconds), then retrieve the output:
+Requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) for the AWS CLI.
 
 ```powershell
-# Poll until the command reaches a terminal state
-do {
-    Start-Sleep -Seconds 10
-    $SSM_STATUS = (aws ssm get-command-invocation `
-      --command-id $SSM_CMD_ID `
-      --instance-id $SOURCE_INSTANCE_ID `
-      --region $AWS_REGION `
-      --query "StatusDetails" --output text)
-    Write-Host "  Status: $SSM_STATUS"
-} while ($SSM_STATUS -in @("Pending","InProgress","Delayed"))
-
-# Retrieve output
-aws ssm get-command-invocation `
-  --command-id $SSM_CMD_ID `
-  --instance-id $SOURCE_INSTANCE_ID `
+# Open an interactive PowerShell session on the source VM
+aws ssm start-session `
+  --target $SOURCE_INSTANCE_ID `
   --region $AWS_REGION `
-  --query "{Status:StatusDetails, Output:StandardOutputContent, Errors:StandardErrorContent}" `
-  --output json
+  --document-name AWS-StartInteractiveCommand `
+  --parameters command="powershell"
 ```
+
+Once connected, in the remote session run:
+
+```powershell
+# Download and run the readiness script from the GitHub repo
+$uri = "https://raw.githubusercontent.com/<your-org>/aws-azure-migration-runbook/main/validation/Invoke-MigrationReadiness.ps1"
+$script = (Invoke-WebRequest -Uri $uri -UseBasicParsing).Content
+Invoke-Expression $script
+# Output is written to C:\ProgramData\MigrationLogs\ on this VM
+```
+
+Type `exit` to close the session when done.
+
+### Option B — RDP directly to the source VM
+
+1. RDP into the source EC2 instance
+2. Open PowerShell and run:
+
+```powershell
+# If you have the repo cloned on the source VM:
+cd C:\path\to\aws-azure-migration-runbook
+.\validation\Invoke-MigrationReadiness.ps1 -Mode Pre -Phase TestMigration
+```
+
+Or download from GitHub as in Option A.
+
+Output is written to `C:\ProgramData\MigrationLogs\` on the source VM.
+
+---
 
 **Save the output.** This is your pre-migration state capture. Any artifact listed as `[FOUND  ]` here should appear as `[CLEAN  ]` after the Cutover cleanup.
-
-> **If SSM access is unavailable:** Connect to the source VM via RDP and run:
-> ```powershell
-> .\validation\Invoke-MigrationReadiness.ps1 -Mode Pre -Phase TestMigration
-> ```
-> Output is written to `C:\ProgramData\MigrationLogs\` on the source VM.
 
 ---
 
@@ -632,7 +631,7 @@ az vm start --resource-group $RG --name $VM_TO_RESTORE
 |---|---|---|
 | `az vm run-command` times out | VM Agent not ready or VM unresponsive | Check VM health in Portal; verify Agent status = Ready |
 | SSM command fails: `InvalidInstanceId` | Instance not SSM-managed or not Online | Verify `aws ssm describe-instance-information` shows `PingStatus = Online` |
-| Phase 1 SSM output is empty | Script too large for SSM inline parameter | Use SSM Session Manager to connect and run the script interactively |
+| `aws ssm start-session` fails | Session Manager plugin not installed | Install the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) |
 | `[FOUND  ]` items remain after Cutover cleanup | Artifact not covered by cleanup script | Remove manually, then update the specific checklist in both scripts |
 | `[WARN ]` heuristic entries in readiness report | Unlisted AWS artifact detected | Review manually — see Heuristic Scans section below; add to checklist if confirmed AWS-specific |
 | AWS services still running after TestMigration | MSI uninstall deferred to Cutover | Expected — MSI uninstalls run only at Cutover phase |
