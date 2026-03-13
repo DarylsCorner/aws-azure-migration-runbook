@@ -110,7 +110,7 @@ Phase 8  Planned Failover (Portal)
 Phase 9  Prepare production VM — snapshot + tag OS disk
 Phase 10 Cutover cleanup on production VM — dry-run → live → readiness check
 Phase 11 Retrieve & review logs from production VM
-Phase 12 Complete cutover (Portal)
+Phase 12 Commit cutover (Portal)
 ```
 
 ---
@@ -634,12 +634,12 @@ az vm run-command invoke `
 
 ---
 
-## Phase 12 — Complete Cutover (Portal)
+## Phase 12 — Commit Cutover (Portal)
 
 Once Phase 10 readiness check passes and Phase 11 log review is complete:
 
 1. **Portal** → Recovery Services Vault → select the vault → **Replicated Items** → select the VM
-2. Click **Complete Cutover**
+2. Click **Commit**
 3. Confirm — this commits the migration and stops replication billing
 4. Optionally: delete the Recovery Services Vault item now that replication is no longer needed
 
