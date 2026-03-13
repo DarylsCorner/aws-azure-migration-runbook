@@ -51,7 +51,7 @@ All `az vm run-command` calls in this guide use `@`-prefixed script paths (e.g. 
 ```powershell
 # Confirm you are in the right place
 Get-Location
-Get-ChildItem  # Should show: linux/  runbook/  validation/  windows/  README.md
+Get-ChildItem  # Should show: .github/  infra/  linux/  runbook/  tests/  validation/  windows/  README.md
 ```
 
 ### 3. Authenticate
