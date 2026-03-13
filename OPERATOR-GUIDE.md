@@ -394,11 +394,12 @@ az vm run-command invoke `
 [PASS   ] No AWS components detected on this VM.
 [PASS   ] All Azure agent checks passed.
   Found AWS components : 0
-  Clean (not found)    : 39
+  Clean (not found)    : 34
   Azure checks passed  : 2
+  Warnings             : 0
 ```
 
-> **Note:** MSI/package uninstalls are **deferred to Cutover phase** — this is by design. The TestMigration readiness check asserts that services and credentials are clean, not that packages are removed.
+> **Note:** MSI/package uninstalls are **deferred to Cutover phase** — this is by design. The TestMigration readiness check asserts that services and credentials are clean, not that packages are removed. Deferred items (binaries, MSIs) appear as `[INFO]` and are not counted in the summary — they do not fail the assertion.
 
 If any `[WARN ]` heuristic entries appear, review them manually before proceeding (see **Readiness Script Reference**).
 
@@ -763,6 +764,7 @@ All checks performed by `validation/Invoke-MigrationReadiness.ps1`. The script i
 | `KinesisAgent` | AWS Kinesis Agent for Windows |
 | `AWSNitroEnclaves` | AWS Nitro Enclaves |
 | `AWSCodeDeployAgent` | AWS CodeDeploy Agent |
+| `AWSLiteAgent` | AWS Lite Guest Agent |
 
 #### Installed Software
 
@@ -771,11 +773,14 @@ All checks performed by `validation/Invoke-MigrationReadiness.ps1`. The script i
 | `Amazon SSM Agent*` | SSM Agent MSI |
 | `Amazon CloudWatch Agent*` | CloudWatch Agent MSI |
 | `EC2ConfigService*` | EC2Config MSI |
-| `EC2Launch*` | EC2Launch MSI |
+| `EC2Launch*` | EC2Launch v1 MSI |
+| `Amazon EC2Launch*` | EC2Launch v2 MSI |
 | `Amazon Kinesis Agent*` | Kinesis Agent MSI |
 | `AWS CodeDeploy Agent*` | CodeDeploy Agent MSI |
 | `AWS Command Line Interface*` | AWS CLI |
 | `Amazon Web Services*` | Generic AWS entry |
+| `aws-cfn-bootstrap*` | CloudFormation Bootstrap |
+| `AWS PV Drivers*` | **Intentionally retained** — ASR replaces PV drivers during replication |
 
 #### Registry Keys
 
@@ -786,6 +791,8 @@ All checks performed by `validation/Invoke-MigrationReadiness.ps1`. The script i
 | `HKLM:\SOFTWARE\Amazon\EC2LaunchV2` | EC2Launch v2 configuration |
 | `HKLM:\SOFTWARE\Amazon\AmazonCloudWatchAgent` | CloudWatch Agent configuration |
 | `HKLM:\SOFTWARE\Amazon\SSM` | SSM Agent configuration |
+| `HKLM:\SOFTWARE\Amazon\MachineImage` | AMI metadata |
+| `HKLM:\SOFTWARE\Amazon\WarmBoot` | EC2 warm boot marker |
 | `HKLM:\SOFTWARE\Amazon\PVDriver` | **Intentionally retained** — PV driver; do not remove |
 
 #### Filesystem Paths
@@ -795,6 +802,8 @@ All checks performed by `validation/Invoke-MigrationReadiness.ps1`. The script i
 | `C:\Program Files\Amazon\SSM` | SSM Agent binaries |
 | `C:\Program Files\Amazon\AmazonCloudWatchAgent` | CloudWatch Agent binaries |
 | `C:\Program Files\Amazon\EC2ConfigService` | EC2Config binaries |
+| `C:\Program Files\Amazon\cfn-bootstrap` | CloudFormation Bootstrap files |
+| `C:\Program Files\Amazon\XenTools` | Xen/legacy paravirtual driver files |
 | `%SystemRoot%\System32\config\systemprofile\.aws` | SYSTEM-context AWS credentials |
 | `%SystemRoot%\ServiceProfiles\NetworkService\.aws` | NetworkService-context AWS credentials |
 
