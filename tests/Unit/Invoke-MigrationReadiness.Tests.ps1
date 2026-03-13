@@ -74,6 +74,8 @@ BeforeAll {
         Mock New-Item                 { [PSCustomObject]@{ FullName = 'mocked' } }
         Mock Write-Host               { }
         Mock Write-Warning            { }
+        Mock Start-Transcript         { }
+        Mock Stop-Transcript          { }
     }
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -169,11 +169,11 @@ function Uninstall-ProgramIfPresent {
         if ($uninstallStr -match 'MsiExec') {
             $productCode = [regex]::Match($uninstallStr, '\{[A-F0-9\-]+\}').Value
             $proc = Start-Process msiexec.exe -ArgumentList "/x $productCode $UninstallArgs" -Wait -PassThru -ErrorAction Stop
-            $exitCode = $proc.ExitCode
+            $exitCode = if ($null -ne $proc) { $proc.ExitCode } else { 0 }
         } else {
             # EXE-based uninstaller
             $proc = Start-Process -FilePath $uninstallStr -ArgumentList $UninstallArgs -Wait -PassThru -ErrorAction Stop
-            $exitCode = $proc.ExitCode
+            $exitCode = if ($null -ne $proc) { $proc.ExitCode } else { 0 }
         }
 
         $detail = "Removed: $($entry.DisplayName) $($entry.DisplayVersion)"
@@ -182,7 +182,9 @@ function Uninstall-ProgramIfPresent {
         } elseif ($exitCode -ne 0) {
             # Exit code 1605 = product not registered — uninstaller already ran; treat as stale entry.
             if ($exitCode -eq 1605 -or $exitCode -eq 1614) {
-                Remove-Item -Path $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+                if ($entry.PSObject.Properties['PSPath']) {
+                    Remove-Item -Path $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+                }
                 Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Completed `
                     -Detail "Removed stale uninstall entry (product already uninstalled, code $exitCode)"
                 return
@@ -197,7 +199,7 @@ function Uninstall-ProgramIfPresent {
             Get-ItemProperty $_ -ErrorAction SilentlyContinue
         } | Where-Object { $_ -ne $null -and $_.PSObject.Properties['DisplayName'] -ne $null -and $_.DisplayName -like $DisplayNamePattern } | Select-Object -First 1
 
-        if ($stillPresent) {
+        if ($stillPresent -and $stillPresent.PSObject.Properties['PSPath']) {
             Remove-Item -Path $stillPresent.PSPath -Recurse -Force -ErrorAction SilentlyContinue
         }
 
@@ -205,7 +207,9 @@ function Uninstall-ProgramIfPresent {
     } catch {
         # "cannot find the file" means the uninstaller binary itself is gone — stale registry entry.
         if ($_.Exception.Message -match 'cannot find the file|No such file|not find') {
-            Remove-Item -Path $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+            if ($entry.PSObject.Properties['PSPath']) {
+                Remove-Item -Path $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
             Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Completed `
                 -Detail "Removed stale uninstall entry (uninstaller binary gone: $($entry.DisplayName))"
         } else {

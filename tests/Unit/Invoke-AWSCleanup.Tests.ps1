@@ -58,6 +58,8 @@ BeforeAll {
         Mock Unregister-ScheduledTask { }
         Mock Get-ChildItem            { return @() }
         Mock Measure-Object           { return [PSCustomObject]@{ Sum = 0 } }
+        Mock Start-Transcript         { }
+        Mock Stop-Transcript          { }
     }
 
     # ── DotSource helper ─────────────────────────────────────────────────────
