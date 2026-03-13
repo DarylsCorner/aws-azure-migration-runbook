@@ -110,6 +110,7 @@ Phase 8  Planned Failover (Portal)
 Phase 9  Prepare production VM — snapshot + tag OS disk
 Phase 10 Cutover cleanup on production VM — dry-run → live → readiness check
 Phase 11 Retrieve & review logs from production VM
+Phase 11b Application validation (production VM)
 Phase 12 Commit cutover (Portal)
 ```
 
@@ -631,6 +632,33 @@ az vm run-command invoke `
 >   --scripts "(Get-ChildItem C:\ProgramData\MigrationLogs\cleanup-*.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Raw)" `
 >   --query "value[0].message" -o tsv
 > ```
+
+---
+
+## Phase 11b — Application Validation (Production VM)
+
+Before committing the cutover, verify the application functions correctly on the **production VM**. Once you click Commit in the next phase, replication stops and rollback becomes more involved.
+
+- [ ] All application services start and respond to health checks
+- [ ] Network connectivity to Azure services (DNS, storage endpoints, Key Vault, etc.) works
+- [ ] No dependency on AWS-specific endpoints (EC2 metadata `169.254.169.254`, S3 paths, SQS, etc.)
+- [ ] Application logs show no AWS credential errors
+- [ ] Azure Monitor / Log Analytics receiving data from the VM
+
+**Verify no AWS services are running:**
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "Get-Service | Where-Object { `$_.DisplayName -match 'amazon|aws|ec2|ssm' } | Select-Object Name, DisplayName, Status | Format-Table -AutoSize" `
+  --query "value[0].message" -o tsv
+```
+
+> **Expected:** All AWS services show `Stopped`. If any service is `Running`, stop it and investigate before proceeding.
+
+If the application is broken, **restore from the Phase 9 snapshot** before committing (see **Rollback** section). Once you commit, re-protection to the source is no longer possible.
 
 ---
 
