@@ -520,7 +520,7 @@ az vm run-command invoke `
   --query "value[0].message" -o tsv
 ```
 
-Review carefully. The Cutover phase includes MSI/package uninstalls and log directory removal that TestMigration deferred. Confirm these appear under `[DryRun]` before proceeding.
+Review carefully. The Cutover phase includes MSI/package uninstalls and scheduled-task removal that TestMigration deferred. Confirm these appear under `[DryRun]` before proceeding.
 
 ### 10b. Live Cutover run
 
@@ -597,6 +597,19 @@ az vm run-command invoke `
 ```
 
 **Final validation:** Compare this readiness report against the Phase 1 pre-failover baseline. Every `[FOUND  ]` item from the baseline should now be `[CLEAN  ]` in this report.
+
+### Remove migration log directory (manual)
+
+The `C:\ProgramData\MigrationLogs\` directory is **not** removed automatically. Once you have finished reviewing all logs and are satisfied with the migration, clean it up manually:
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "Remove-Item -Path 'C:\ProgramData\MigrationLogs' -Recurse -Force" `
+  --query "value[0].message" -o tsv
+```
 
 ---
 
