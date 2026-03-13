@@ -121,7 +121,9 @@ You will be prompted for all site-specific values.
 
 ```powershell
 # ── Azure ─────────────────────────────────────────────────────────────────────
-$SUBSCRIPTION_ID = Read-Host "Azure Subscription ID"
+if ([string]::IsNullOrWhiteSpace($SUBSCRIPTION_ID)) {
+    $SUBSCRIPTION_ID = Read-Host "Azure Subscription ID"
+}
 $RG              = Read-Host "Azure Resource Group [press Enter for rg-mig-landing]"
 if ([string]::IsNullOrWhiteSpace($RG)) { $RG = "rg-mig-landing" }
 
