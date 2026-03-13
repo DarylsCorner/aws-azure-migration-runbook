@@ -669,7 +669,7 @@ Once Phase 10 readiness check passes and Phase 11 log review is complete:
 1. **Portal** → Recovery Services Vault → select the vault → **Replicated Items** → select the VM
 2. Click **Commit**
 3. Confirm — this commits the migration and stops replication billing
-4. Optionally: delete the Recovery Services Vault item now that replication is no longer needed
+4. Once the Commit job completes, click **Complete Migration** — this finalizes the vault item and removes it from Replicated Items
 
 The source EC2 instance can now be stopped/terminated per your decommission plan.
 
