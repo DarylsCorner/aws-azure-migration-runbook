@@ -632,19 +632,6 @@ az vm run-command invoke `
 >   --query "value[0].message" -o tsv
 > ```
 
-### Remove migration log directory (manual)
-
-The `C:\ProgramData\MigrationLogs\` directory is **not** removed automatically. Once you have finished reviewing all logs and are satisfied with the migration, clean it up manually:
-
-```powershell
-az vm run-command invoke `
-  --resource-group $RG `
-  --name $PROD_VM_NAME `
-  --command-id RunPowerShellScript `
-  --scripts "Remove-Item -Path 'C:\ProgramData\MigrationLogs' -Recurse -Force" `
-  --query "value[0].message" -o tsv
-```
-
 ---
 
 ## Phase 12 — Complete Cutover (Portal)
@@ -657,6 +644,31 @@ Once Phase 10 readiness check passes and Phase 11 log review is complete:
 4. Optionally: delete the Recovery Services Vault item now that replication is no longer needed
 
 The source EC2 instance can now be stopped/terminated per your decommission plan.
+
+### Delete the Phase 9 snapshot
+
+The pre-cleanup snapshot created in Phase 9 is not deleted automatically. Once the cutover is committed and you are satisfied with the migration, delete it:
+
+```powershell
+az snapshot delete `
+  --resource-group $RG `
+  --name "$PROD_VM_NAME-pre-cleanup-snapshot"
+```
+
+> **Note:** Retain the snapshot if your change-management process requires a post-cutover hold period. It accrues storage costs.
+
+### Remove migration logs from production VM
+
+The `C:\ProgramData\MigrationLogs\` directory is **not** removed automatically. Once you have reviewed all logs and are satisfied with the migration, clean it up:
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG `
+  --name $PROD_VM_NAME `
+  --command-id RunPowerShellScript `
+  --scripts "Remove-Item -Path 'C:\ProgramData\MigrationLogs' -Recurse -Force" `
+  --query "value[0].message" -o tsv
+```
 
 ---
 
