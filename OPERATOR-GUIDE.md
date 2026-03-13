@@ -68,11 +68,20 @@ aws configure
 Verify both:
 
 ```powershell
-az account list --query "[].{Name:name, ID:id, State:state}" -o table
+az account show --query "{Name:name, ID:id, State:state}" -o table
+# Expected: State = Enabled
 aws sts get-caller-identity --output table
 ```
 
 ### 4. Set the correct Azure subscription
+
+If you have access to multiple subscriptions, list them first to find the right ID:
+
+```powershell
+az account list --query "[].{Name:name, ID:id, State:state}" -o table
+```
+
+Then set the one you want:
 
 ```powershell
 $SUBSCRIPTION_ID = Read-Host "Azure Subscription ID"
