@@ -177,18 +177,35 @@ Review the dry-run, then run live:
 
 Run the readiness auditor to verify the VM is fully clean.
 
-### Windows
+### Windows — via az vm run-command (preferred)
 
 ```powershell
-# Run inside the VM or via Run Command
-.\validation\Invoke-MigrationReadiness.ps1 -Mode Post
+az vm run-command invoke `
+  -g <resource-group> `
+  -n <vm-name> `
+  --command-id RunPowerShellScript `
+  --scripts "@validation/Invoke-MigrationReadiness.ps1" `
+  --parameters "Phase=Cutover" `
+  --query "value[0].message" -o tsv
+```
+
+### Windows — directly inside the VM (via RDP or Bastion)
+
+```powershell
+.\validation\Invoke-MigrationReadiness.ps1 -Mode Post -Phase Cutover
 ```
 
 A passing post-audit shows:
-- All AWS service checks: `NotFound` or `Disabled`
-- All AWS credential directories: `NotFound`
-- Azure VM Agent: `Running`
-- No `Error` status items
+
+```
+[PASS   ] No AWS components detected on this VM.
+[PASS   ] All Azure agent checks passed.
+  Found AWS components : 0
+  Clean (not found)    : 39
+  Azure checks passed  : 2
+```
+
+If any `[WARN ]` lines appear under **Heuristic Scans**, review them manually — they flag unlisted AWS artifacts (unknown services, registry keys, software, or directories matching `Amazon`/`AWS`/`EC2` keywords) that were not in the standard checklist. Decide whether each one should be removed before completing the migration.
 
 ### Linux
 
@@ -303,6 +320,120 @@ sudo bash linux/invoke-aws-cleanup.sh --phase cutover --report /var/log/migratio
 # Tag a disk (after taking snapshot)
 az resource tag --ids $(az vm show -g <rg> -n <vm> --query "storageProfile.osDisk.managedDisk.id" -o tsv) --tags MigrationSnapshot=true
 ```
+
+---
+
+## Readiness Script Reference
+
+Documents every check performed by `validation/Invoke-MigrationReadiness.ps1` and what it logs.
+All checks are **read-only** — the script never modifies the VM.
+
+### Check categories and status codes
+
+| Status | Meaning |
+|--------|---------|
+| `[CLEAN  ]` | Artifact not found — expected post-cleanup |
+| `[FOUND  ]` | Artifact present — counts as a failure in Post assertions |
+| `[PASS   ]` | Azure check passed |
+| `[FAIL   ]` | Azure check failed (blocks migration readiness) |
+| `[WARN   ]` | Heuristic scan found something not in the known list — needs manual review |
+| `[INFO   ]` | Informational only (e.g. agent version) |
+
+---
+
+### Specific checklist (hardcoded)
+
+These are checked by name/path. Result is `FOUND` or `CLEAN`. In Post mode, any `FOUND` item fails the assertion.
+
+#### Services
+
+| Service Name | Description |
+|---|---|
+| `AmazonSSMAgent` | AWS Systems Manager Agent |
+| `AmazonCloudWatchAgent` | AWS CloudWatch Agent |
+| `EC2Config` | EC2Config (legacy, pre-2016 AMIs) |
+| `EC2Launch` | EC2Launch v1 |
+| `Amazon EC2Launch` | EC2Launch v2 |
+| `KinesisAgent` | AWS Kinesis Agent for Windows |
+| `AWSNitroEnclaves` | AWS Nitro Enclaves |
+| `AWSCodeDeployAgent` | AWS CodeDeploy Agent |
+
+#### Installed Software (uninstall registry)
+
+| Pattern | Description |
+|---|---|
+| `Amazon SSM Agent*` | AWS Systems Manager Agent MSI |
+| `Amazon CloudWatch Agent*` | CloudWatch Agent MSI |
+| `EC2ConfigService*` | EC2Config MSI |
+| `EC2Launch*` | EC2Launch MSI |
+| `Amazon Kinesis Agent*` | Kinesis Agent MSI |
+| `AWS CodeDeploy Agent*` | CodeDeploy Agent MSI |
+| `AWS Command Line Interface*` | AWS CLI |
+| `Amazon Web Services*` | Generic Amazon Web Services entry |
+
+#### Registry keys
+
+| Key Path | Description |
+|---|---|
+| `HKLM:\SOFTWARE\Amazon\EC2ConfigService` | EC2Config configuration hive |
+| `HKLM:\SOFTWARE\Amazon\EC2Launch` | EC2Launch v1 configuration hive |
+| `HKLM:\SOFTWARE\Amazon\EC2LaunchV2` | EC2Launch v2 configuration hive |
+| `HKLM:\SOFTWARE\Amazon\AmazonCloudWatchAgent` | CloudWatch Agent configuration hive |
+| `HKLM:\SOFTWARE\Amazon\SSM` | SSM Agent configuration hive |
+| `HKLM:\SOFTWARE\Amazon\PVDriver` | **Intentionally retained** — PV driver; do not remove |
+
+#### Filesystem paths
+
+| Path | Description |
+|---|---|
+| `C:\Program Files\Amazon\SSM` | SSM Agent binaries |
+| `C:\Program Files\Amazon\AmazonCloudWatchAgent` | CloudWatch Agent binaries |
+| `C:\Program Files\Amazon\EC2ConfigService` | EC2Config binaries |
+| `%SystemRoot%\System32\config\systemprofile\.aws` | SYSTEM-context AWS credentials |
+| `%SystemRoot%\ServiceProfiles\NetworkService\.aws` | NetworkService-context AWS credentials |
+
+#### Environment variables (machine-scope)
+
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_DEFAULT_REGION`,
+`AWS_REGION`, `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`
+
+#### Hosts file entries
+
+| Pattern | Description |
+|---|---|
+| `169\.254\.169\.254.*ec2\.internal` | EC2 metadata hostname alias |
+| `instance-data\.ec2\.internal` | EC2 instance-data alias |
+
+#### Scheduled tasks
+
+| Task | Path |
+|---|---|
+| `Amazon EC2Launch - Instance Initialization` | `\` |
+| `AmazonCloudWatchAutoUpdate` | `\Amazon\AmazonCloudWatch\` |
+| Any task under `\Amazon\*` | Dynamic scan |
+
+#### Azure readiness checks
+
+| Check | Pass condition |
+|---|---|
+| `WindowsAzureGuestAgent` service | Running, StartType = Automatic |
+| Azure IMDS (`169.254.169.254`) | Responds with `provider = Microsoft.Compute` |
+
+---
+
+### Heuristic scans (dynamic — logs as `[WARN ]`)
+
+These scans catch **unknown or unlisted** AWS artifacts. They do not fail the Post assertion but appear in the report for manual review. Use them to identify novel artifacts on VMs that have custom tooling not covered by the specific checklist.
+
+| Scan | What it looks for | Trigger |
+|---|---|---|
+| **Services (Heuristic)** | All services whose `DisplayName` or `Description` matches `amazon`, `aws`, `ec2`, or `ssm` (case-insensitive) — excluding the 8 already in the specific list | Any non-standard AWS service registration |
+| **Registry (Heuristic)** | All sub-keys directly under `HKLM:\SOFTWARE\Amazon\` not in the specific list (excluding `PVDriver`) | Custom tools that write to the Amazon registry hive |
+| **Installed Software (Heuristic)** | All programs in the uninstall registry whose `DisplayName` matches `\bAmazon\b`, `\bAWS\b`, or `\bEC2\b` — excluding the 8 already in the specific list | Bundled or third-party AWS-integrated software |
+| **Filesystem (Heuristic)** | All subdirectories under `C:\Program Files\Amazon\` not in the specific list; also flags an empty `C:\Program Files\Amazon\` root at Cutover phase | Custom agent installations |
+| **Scheduled Tasks (Heuristic)** | Any task under the `\Amazon\*` task folder not in the specific list | Agent update or reporting tasks |
+
+> **Workflow:** After a readiness check, search the report for `"Status": "Warning"`. For each warning, determine whether the artifact is AWS-specific. If yes, remove it manually and add it to the specific checklist in both `Invoke-MigrationReadiness.ps1` and `Invoke-AWSCleanup.ps1` so future VMs are handled automatically.
 
 ---
 

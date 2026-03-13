@@ -277,8 +277,104 @@ function Check-IMDSReachable {
 }
 
 # -----------------------------------------------------------------------------
-# Also scan Amazon-prefixed task folders dynamically
+# Heuristic scans -- surface unknown AWS artifacts not in the specific checklist.
+# These log as Warning so they appear in the report without failing assertions.
 # -----------------------------------------------------------------------------
+
+# Any service whose DisplayName or Description contains Amazon/AWS/EC2 keywords
+# that is NOT already covered by the specific Check-Service calls above.
+function Scan-AllAwsServices {
+    $knownNames = @(
+        'AmazonSSMAgent','AmazonCloudWatchAgent','EC2Config','EC2Launch',
+        'Amazon EC2Launch','KinesisAgent','AWSNitroEnclaves','AWSCodeDeployAgent'
+    )
+    $awsPattern = 'amazon|\baws\b|\bec2\b|\bssm\b'
+    $allServices = Get-Service -ErrorAction SilentlyContinue
+    foreach ($svc in $allServices) {
+        if ($knownNames -contains $svc.Name) { continue }   # already checked specifically
+        $displayName = $svc.DisplayName
+        $description = (Get-CimInstance Win32_Service -Filter "Name='$($svc.Name)'" -ErrorAction SilentlyContinue).Description
+        if ($displayName -match $awsPattern -or $description -match $awsPattern) {
+            Add-Finding -Category 'Services (Heuristic)' -Name $svc.Name `
+                -Status Warning `
+                -Detail "DisplayName='$displayName' Status=$($svc.Status) -- matches AWS keyword, not in known list" `
+                -Recommendation "Review service '$($svc.Name)' to determine if it should be removed"
+        }
+    }
+}
+
+# Any sub-key under HKLM:\SOFTWARE\Amazon\ not covered by specific Check-RegistryKey calls
+function Scan-AmazonRegistrySubkeys {
+    $knownKeys = @(
+        'EC2ConfigService','EC2Launch','EC2LaunchV2','AmazonCloudWatchAgent','SSM','PVDriver'
+    )
+    $amazonRoot = 'HKLM:\SOFTWARE\Amazon'
+    if (-not (Test-Path $amazonRoot)) { return }
+    $subkeys = Get-ChildItem $amazonRoot -ErrorAction SilentlyContinue
+    foreach ($key in $subkeys) {
+        $leaf = Split-Path $key.Name -Leaf
+        if ($knownKeys -contains $leaf) { continue }   # already checked or intentionally kept
+        Add-Finding -Category 'Registry (Heuristic)' -Name "HKLM:\SOFTWARE\Amazon\$leaf" `
+            -Status Warning `
+            -Detail "Unlisted sub-key present under HKLM:\SOFTWARE\Amazon\" `
+            -Recommendation "Review registry key 'HKLM:\SOFTWARE\Amazon\$leaf' and remove if AWS-specific"
+    }
+}
+
+# Any installed program whose DisplayName contains Amazon or AWS not in the known list
+function Scan-AllAwsSoftware {
+    $knownPatterns = @(
+        'Amazon SSM Agent*','Amazon CloudWatch Agent*','EC2ConfigService*',
+        'EC2Launch*','Amazon Kinesis Agent*','AWS CodeDeploy Agent*',
+        'AWS Command Line Interface*','Amazon Web Services*'
+    )
+    $regPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    $awsEntries = $regPaths | ForEach-Object {
+        Get-ItemProperty $_ -ErrorAction SilentlyContinue
+    } | Where-Object {
+        $_ -ne $null -and
+        $_.PSObject.Properties['DisplayName'] -ne $null -and
+        $_.DisplayName -match '(?i)(\bamazon\b|\baws\b|\bEC2\b)'
+    }
+    foreach ($entry in $awsEntries) {
+        $alreadyKnown = $false
+        foreach ($p in $knownPatterns) {
+            if ($entry.DisplayName -like $p) { $alreadyKnown = $true; break }
+        }
+        if ($alreadyKnown) { continue }
+        Add-Finding -Category 'Installed Software (Heuristic)' -Name $entry.DisplayName `
+            -Status Warning `
+            -Detail "v$($entry.DisplayVersion) -- matches AWS keyword, not in known list" `
+            -Recommendation "Review '$($entry.DisplayName)' to determine if it should be uninstalled"
+    }
+}
+
+# Any subdirectory under C:\Program Files\Amazon\ not in the known list
+function Scan-AmazonDirectory {
+    $knownDirs = @('SSM','AmazonCloudWatchAgent','EC2ConfigService','EC2Launch','Ec2ConfigService')
+    $amazonRoot = 'C:\Program Files\Amazon'
+    if (-not (Test-Path $amazonRoot)) { return }
+    $subdirs = Get-ChildItem -Path $amazonRoot -Directory -ErrorAction SilentlyContinue
+    foreach ($dir in $subdirs) {
+        if ($knownDirs -contains $dir.Name) { continue }   # already checked specifically
+        Add-Finding -Category 'Filesystem (Heuristic)' -Name $dir.FullName `
+            -Status Warning `
+            -Detail "Unlisted directory under C:\Program Files\Amazon\" `
+            -Recommendation "Review '$($dir.FullName)' and remove if AWS-specific"
+    }
+    # Also flag if the root Amazon dir still exists after Cutover (subdirs gone but root may linger)
+    if ($Phase -eq 'Cutover' -and -not $subdirs) {
+        Add-Finding -Category 'Filesystem (Heuristic)' -Name $amazonRoot `
+            -Status Warning `
+            -Detail "Amazon root directory is empty but still present" `
+            -Recommendation "Remove empty directory '$amazonRoot'"
+    }
+}
+
+# Also scan Amazon-prefixed task folders dynamically
 function Scan-AmazonScheduledTasks {
     $amazonTasks = Get-ScheduledTask -TaskPath '\Amazon\*' -ErrorAction SilentlyContinue
     if ($amazonTasks) {
@@ -362,6 +458,13 @@ Write-Host "--- Scheduled Tasks ---"
 Check-ScheduledTask 'Amazon EC2Launch - Instance Initialization'
 Check-ScheduledTask 'AmazonCloudWatchAutoUpdate' '\Amazon\AmazonCloudWatch\'
 Scan-AmazonScheduledTasks
+
+# -- Heuristic Scans (unknown artifacts) ---------------------------------------
+Write-Host "--- Heuristic Scans ---"
+Scan-AllAwsServices
+Scan-AmazonRegistrySubkeys
+Scan-AllAwsSoftware
+Scan-AmazonDirectory
 
 # -- Azure Agent & IMDS --------------------------------------------------------
 Write-Host "--- Azure Agent & IMDS ---"
