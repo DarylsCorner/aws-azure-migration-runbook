@@ -671,6 +671,8 @@ Once Phase 10 readiness check passes and Phase 11 log review is complete:
 3. Confirm — this commits the migration and stops replication billing
 4. Once the Commit job completes, click **Complete Migration** — this finalizes the vault item and removes it from Replicated Items
 
+> **DNS cutover:** Before stopping the source EC2 instance, update your DNS records to point the application hostname to the Azure VM's IP address (or load balancer). Verify the change has propagated and traffic is reaching the Azure VM before terminating the source. Cutting DNS first allows a brief period where both endpoints are live, giving you a safer window to confirm the switch.
+
 The source EC2 instance can now be stopped/terminated per your decommission plan.
 
 ### Delete the Phase 9 snapshot
