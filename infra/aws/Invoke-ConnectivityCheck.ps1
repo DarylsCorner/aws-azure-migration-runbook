@@ -53,6 +53,10 @@
 .PARAMETER TimeoutSec
     Per-probe TCP connection timeout in seconds.  Default: 5.
 
+.PARAMETER SkipLinux
+    Omit all Linux source VM probes. Use when the Linux VM is stopped or not
+    yet provisioned and only Windows connectivity needs to be verified.
+
 .EXAMPLE
     # Fully automatic — reads all IPs from env files
     .\Invoke-ConnectivityCheck.ps1
@@ -75,7 +79,8 @@ param(
     [string] $DiscoveryApplianceIp            = '',
     [string] $ReplicationApplianceIp          = '',
     [string] $Region                          = '',
-    [int]    $TimeoutSec                      = 5
+    [int]    $TimeoutSec                      = 5,
+    [switch] $SkipLinux
 )
 
 Set-StrictMode -Version Latest
@@ -284,7 +289,8 @@ function Invoke-ConnectivityCheckMain {
         [string] $DiscoveryApplianceIp,
         [string] $ReplicationApplianceIp,
         [string] $Region,
-        [int]    $TimeoutSec
+        [int]    $TimeoutSec,
+        [switch] $SkipLinux
     )
 
     # -- Resolve test-env.json ------------------------------------------------
@@ -335,8 +341,14 @@ function Invoke-ConnectivityCheckMain {
     Write-Host "`n=== ASR Appliance Connectivity Check ===" -ForegroundColor Cyan
     if ($DiscoveryApplianceIp)   { Write-Host "  Discovery appliance   : $DiscoveryApplianceIp" }
     if ($ReplicationApplianceIp) { Write-Host "  Replication appliance : $ReplicationApplianceIp" }
+    if ($SkipLinux) {
+        $testEnv.LinuxInstanceId = ''
+        $testEnv.LinuxPrivateIp  = ''
+    }
+
     Write-Host "  Windows source VM     : $($testEnv.WindowsInstanceId) ($($testEnv.WindowsPrivateIp))"
-    Write-Host "  Linux source VM       : $($testEnv.LinuxInstanceId) ($($testEnv.LinuxPrivateIp))"
+    $linuxStatus = if ($SkipLinux) { 'SKIPPED' } else { "$($testEnv.LinuxInstanceId) ($($testEnv.LinuxPrivateIp))" }
+    Write-Host "  Linux source VM       : $linuxStatus"
     Write-Host ""
 
     # -- Build and run probes -------------------------------------------------
@@ -405,6 +417,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         -DiscoveryApplianceIp           $DiscoveryApplianceIp `
         -ReplicationApplianceIp         $ReplicationApplianceIp `
         -Region                         $Region `
-        -TimeoutSec                     $TimeoutSec
+        -TimeoutSec                     $TimeoutSec `
+        -SkipLinux:$SkipLinux
     exit $exitCode
 }
