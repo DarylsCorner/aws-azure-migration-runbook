@@ -36,7 +36,7 @@ git --version
 
 ```powershell
 $REPO_DIR = Read-Host "Local path to clone into (e.g. C:\Migrations\runbook)"
-git clone https://github.com/<your-org>/aws-azure-migration-runbook.git $REPO_DIR
+git clone https://github.com/DarylsCorner/aws-azure-migration-runbook.git $REPO_DIR
 Set-Location $REPO_DIR
 ```
 
@@ -211,7 +211,8 @@ Once connected, in the remote session run:
 
 ```powershell
 # Download and run the readiness script from the GitHub repo
-$uri = "https://raw.githubusercontent.com/<your-org>/aws-azure-migration-runbook/main/validation/Invoke-MigrationReadiness.ps1"
+# Note: if you have forked this repo, replace 'DarylsCorner' with your own org name
+$uri = "https://raw.githubusercontent.com/DarylsCorner/aws-azure-migration-runbook/main/validation/Invoke-MigrationReadiness.ps1"
 $script = (Invoke-WebRequest -Uri $uri -UseBasicParsing).Content
 Invoke-Expression $script
 # Output is written to C:\ProgramData\MigrationLogs\ on this VM
