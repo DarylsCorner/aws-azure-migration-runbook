@@ -3,7 +3,82 @@
 End-to-end runbook for migrating a Windows VM from AWS to Azure using Azure Migrate/ASR.
 Covers pre-failover source inventory, test failover validation, production cutover, and final readiness verification.
 
-No values are hardcoded — all site-specific details are collected at the start of each session.
+All site-specific details are collected at the start of each session.
+
+---
+
+## Setup — Do This Once
+
+Complete this section once on the machine from which you will run the migration. Skip steps you have already done.
+
+### 1. Required tools
+
+| Tool | Minimum version | Install |
+|---|---|---|
+| PowerShell | 7.2+ | [aka.ms/powershell](https://aka.ms/powershell) |
+| Azure CLI (`az`) | 2.50+ | `winget install Microsoft.AzureCLI` |
+| AWS CLI (`aws`) | 2.x | [docs.aws.amazon.com/cli](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) |
+| Git | any | `winget install Git.Git` |
+
+Verify versions:
+
+```powershell
+pwsh --version
+az version --query '"azure-cli"' -o tsv
+aws --version
+git --version
+```
+
+### 2. Clone the runbook repository
+
+```powershell
+$REPO_DIR = Read-Host "Local path to clone into (e.g. C:\Migrations\runbook)"
+git clone https://github.com/<your-org>/aws-azure-migration-runbook.git $REPO_DIR
+Set-Location $REPO_DIR
+```
+
+> If the repo is already cloned, navigate to it and pull the latest:
+> ```powershell
+> Set-Location $REPO_DIR
+> git pull
+> ```
+
+All `az vm run-command` calls in this guide use `@`-prefixed script paths (e.g. `--scripts "@windows/Invoke-AWSCleanup.ps1"`). These paths are **relative to the directory where your terminal is currently running**. You must always be in the root of the cloned repo when running those commands.
+
+```powershell
+# Confirm you are in the right place
+Get-Location
+Get-ChildItem  # Should show: linux/  runbook/  validation/  windows/  README.md
+```
+
+### 3. Authenticate
+
+```powershell
+# Azure — interactive browser login
+az login
+
+# AWS — configure credentials (skip if already configured or using an instance role)
+aws configure
+# Prompts for: Access Key ID, Secret Access Key, Default region, Output format
+```
+
+Verify both:
+
+```powershell
+az account list --query "[].{Name:name, ID:id, State:state}" -o table
+aws sts get-caller-identity --output table
+```
+
+### 4. Set the correct Azure subscription
+
+```powershell
+$SUBSCRIPTION_ID = Read-Host "Azure Subscription ID"
+az account set --subscription $SUBSCRIPTION_ID
+az account show --query "{Name:name, ID:id, State:state}" -o table
+# Confirm State = Enabled
+```
+
+> **Note:** `az account set` only persists for the current shell session. Repeat this step (or run Phase 0 below) whenever you open a new terminal.
 
 ---
 
