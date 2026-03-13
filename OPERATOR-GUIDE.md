@@ -81,13 +81,13 @@ If you have access to multiple subscriptions, list them first to find the right 
 az account list --query "[].{Name:name, ID:id, State:state}" -o table
 ```
 
-Then set the one you want:
+Then set the one you want. **`$SUBSCRIPTION_ID` is required — it is used throughout this guide and in Phase 0.**
 
 ```powershell
 $SUBSCRIPTION_ID = Read-Host "Azure Subscription ID"
 az account set --subscription $SUBSCRIPTION_ID
 az account show --query "{Name:name, ID:id, State:state}" -o table
-# Confirm State = Enabled
+# Confirm State = Enabled and the correct subscription is shown
 ```
 
 > **Note:** `az account set` only persists for the current shell session. Repeat this step (or run Phase 0 below) whenever you open a new terminal.
