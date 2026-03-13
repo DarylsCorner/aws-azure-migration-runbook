@@ -651,12 +651,18 @@ $reportJson = $report | ConvertTo-Json -Depth 5 -Compress
 
 # Write to file
 try {
-    $reportDir = Split-Path $script:ReportPath -Parent
+    # Re-derive the path in case $script: scope was lost when running via
+    # az vm run-command (which may wrap the script inside an outer runner,
+    # causing $script: to refer to a different scope at execution time).
+    $effectiveReportPath = if ($script:ReportPath) { $script:ReportPath } else {
+        Join-Path $script:LogDir "cleanup-$Phase-$($script:RunStamp).json"
+    }
+    $reportDir = Split-Path $effectiveReportPath -Parent
     if (-not (Test-Path $reportDir)) {
         New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
     }
-    $reportJson | Set-Content -Path $script:ReportPath -Encoding UTF8
-    Write-Log "Report written to: $script:ReportPath"
+    $reportJson | Set-Content -Path $effectiveReportPath -Encoding UTF8
+    Write-Log "Report written to: $effectiveReportPath"
 } catch {
     Write-Log "Could not write report file: $($_.Exception.Message)" -Level ERROR
 }
