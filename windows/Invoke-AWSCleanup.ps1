@@ -146,17 +146,65 @@ function Uninstall-ProgramIfPresent {
         return
     }
 
+    # Guard: stale registry entry (previous partial uninstall left key but cleared UninstallString)
+    if ([string]::IsNullOrWhiteSpace($uninstallStr)) {
+        try {
+            Remove-Item -Path $entry.PSPath -Recurse -Force -ErrorAction Stop
+            Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Completed `
+                -Detail "Removed stale uninstall registry entry for $($entry.DisplayName)"
+        } catch {
+            Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Error `
+                -Detail "Stale entry found but could not remove registry key: $($_.Exception.Message)"
+        }
+        return
+    }
+
     try {
         if ($uninstallStr -match 'MsiExec') {
             $productCode = [regex]::Match($uninstallStr, '\{[A-F0-9\-]+\}').Value
-            Start-Process msiexec.exe -ArgumentList "/x $productCode $UninstallArgs" -Wait -ErrorAction Stop
+            $proc = Start-Process msiexec.exe -ArgumentList "/x $productCode $UninstallArgs" -Wait -PassThru -ErrorAction Stop
+            $exitCode = $proc.ExitCode
         } else {
             # EXE-based uninstaller
-            Start-Process -FilePath $uninstallStr -ArgumentList $UninstallArgs -Wait -ErrorAction Stop
+            $proc = Start-Process -FilePath $uninstallStr -ArgumentList $UninstallArgs -Wait -PassThru -ErrorAction Stop
+            $exitCode = $proc.ExitCode
         }
-        Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Completed -Detail "Removed: $($entry.DisplayName) $($entry.DisplayVersion)"
+
+        $detail = "Removed: $($entry.DisplayName) $($entry.DisplayVersion)"
+        if ($exitCode -eq 3010) {
+            $detail += ' (reboot required to complete — registry key force-removed)'
+        } elseif ($exitCode -ne 0) {
+            # Exit code 1605 = product not registered — uninstaller already ran; treat as stale entry.
+            if ($exitCode -eq 1605 -or $exitCode -eq 1614) {
+                Remove-Item -Path $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+                Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Completed `
+                    -Detail "Removed stale uninstall entry (product already uninstalled, code $exitCode)"
+                return
+            }
+            Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Error -Detail "msiexec exited $exitCode for $($entry.DisplayName)"
+            return
+        }
+
+        # Post-verify: some MSIs defer uninstall-key removal to reboot.
+        # Force-remove the key now so the VM passes readiness checks without a reboot.
+        $stillPresent = $regPaths | ForEach-Object {
+            Get-ItemProperty $_ -ErrorAction SilentlyContinue
+        } | Where-Object { $_ -ne $null -and $_.PSObject.Properties['DisplayName'] -ne $null -and $_.DisplayName -like $DisplayNamePattern } | Select-Object -First 1
+
+        if ($stillPresent) {
+            Remove-Item -Path $stillPresent.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Completed -Detail $detail
     } catch {
-        Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Error -Detail $_.Exception.Message
+        # "cannot find the file" means the uninstaller binary itself is gone — stale registry entry.
+        if ($_.Exception.Message -match 'cannot find the file|No such file|not find') {
+            Remove-Item -Path $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+            Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Completed `
+                -Detail "Removed stale uninstall entry (uninstaller binary gone: $($entry.DisplayName))"
+        } else {
+            Add-ActionResult -Name "Uninstall: $FriendlyName" -Status Error -Detail $_.Exception.Message
+        }
     }
 }
 
@@ -469,6 +517,38 @@ if ($Phase -eq 'Cutover') {
         -FriendlyName 'CloudWatch Agent install directory'
     Remove-DirectoryIfPresent -DirectoryPath 'C:\Program Files\Amazon\EC2ConfigService' `
         -FriendlyName 'EC2Config install directory'
+
+    # Delete service registrations not removed by MSI (e.g. planted stubs or
+    # services whose MSI was separately uninstalled leaving the SCM entry behind).
+    Write-Log "--- Section 7b: Cutover-only Service Registration Cleanup ---"
+    foreach ($svc in $awsServices) {
+        $existing = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
+        if (-not $existing) {
+            Add-ActionResult -Name "Delete Service: $($svc.Friendly)" -Status Skipped -Detail 'Service not registered'
+            continue
+        }
+        if ($DryRun) {
+            Add-ActionResult -Name "Delete Service: $($svc.Friendly)" -Status DryRun -Detail "Would run: sc.exe delete $($svc.Name)"
+            continue
+        }
+        try {
+            # Ensure stopped before deleting
+            if ($existing.Status -ne 'Stopped') {
+                Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
+            }
+            $scOut = sc.exe delete $svc.Name 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Add-ActionResult -Name "Delete Service: $($svc.Friendly)" -Status Completed -Detail "Service registration removed"
+            } elseif ($LASTEXITCODE -eq 1060) {
+                # 1060 = service does not exist -- treat as already gone
+                Add-ActionResult -Name "Delete Service: $($svc.Friendly)" -Status Skipped -Detail 'Service not registered (1060)'
+            } else {
+                Add-ActionResult -Name "Delete Service: $($svc.Friendly)" -Status Error -Detail "sc.exe delete exited $LASTEXITCODE : $scOut"
+            }
+        } catch {
+            Add-ActionResult -Name "Delete Service: $($svc.Friendly)" -Status Error -Detail $_.Exception.Message
+        }
+    }
 
 } else {
     Write-Log "--- Section 7: Skipped (TestMigration phase - MSI uninstalls deferred to Cutover) ---"
