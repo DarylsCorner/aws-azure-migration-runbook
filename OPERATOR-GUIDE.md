@@ -213,9 +213,11 @@ Once connected, in the remote session run:
 # Note: if you have forked this repo, replace 'DarylsCorner' with your own org name
 $uri = "https://raw.githubusercontent.com/DarylsCorner/aws-azure-migration-runbook/main/validation/Invoke-MigrationReadiness.ps1"
 $script = (Invoke-WebRequest -Uri $uri -UseBasicParsing).Content
-Invoke-Expression $script
+& ([scriptblock]::Create($script)) -Mode Pre
 # Output is written to C:\ProgramData\MigrationLogs\ on this VM
 ```
+
+> **Expected:** Every AWS component on the source VM will show as `[FOUND  ]`. This is correct — the source VM is untouched. The script runs in inventory-only mode (`-Mode Pre`) and does **not** assert a clean state.
 
 Type `exit` to close the session when done.
 
@@ -227,7 +229,7 @@ Type `exit` to close the session when done.
 ```powershell
 # If you have the repo cloned on the source VM:
 cd C:\path\to\aws-azure-migration-runbook
-.\validation\Invoke-MigrationReadiness.ps1 -Mode Pre -Phase TestMigration
+.\validation\Invoke-MigrationReadiness.ps1 -Mode Pre
 ```
 
 Or download from GitHub as in Option A.
