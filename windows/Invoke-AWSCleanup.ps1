@@ -555,7 +555,34 @@ if ($Phase -eq 'Cutover') {
     Remove-DirectoryIfPresent -DirectoryPath 'C:\Program Files\Amazon\XenTools' `
         -FriendlyName 'XenTools directory'
 
-    # Delete service registrations not removed by MSI (e.g. planted stubs or
+    # Remove the Amazon root directory if it is now empty.
+    # Only attempt this after all subdirectories above have been processed.
+    # If AWS CLI (intentionally retained) or any other content remains, skip.
+    $amazonRoot = 'C:\Program Files\Amazon'
+    if (Test-Path $amazonRoot) {
+        $remainingChildren = Get-ChildItem -Path $amazonRoot -ErrorAction SilentlyContinue
+        if ($null -eq $remainingChildren -or $remainingChildren.Count -eq 0) {
+            if ($DryRun) {
+                Add-ActionResult -Name 'Remove Directory: Amazon root (empty)' -Status DryRun `
+                    -Detail "Would remove empty directory: $amazonRoot"
+            } else {
+                try {
+                    Remove-Item -Path $amazonRoot -Force -ErrorAction Stop
+                    Add-ActionResult -Name 'Remove Directory: Amazon root (empty)' -Status Completed `
+                        -Detail "Removed empty directory: $amazonRoot"
+                } catch {
+                    Add-ActionResult -Name 'Remove Directory: Amazon root (empty)' -Status Error `
+                        -Detail $_.Exception.Message
+                }
+            }
+        } else {
+            Add-ActionResult -Name 'Remove Directory: Amazon root (empty)' -Status Skipped `
+                -Detail "Directory not empty ($($remainingChildren.Count) item(s) remain — e.g. AWS CLI); skipping root removal"
+        }
+    } else {
+        Add-ActionResult -Name 'Remove Directory: Amazon root (empty)' -Status Skipped `
+            -Detail 'Path not found'
+    }
     # services whose MSI was separately uninstalled leaving the SCM entry behind).
     Write-Log "--- Section 7b: Cutover-only Service Registration Cleanup ---"
     foreach ($svc in $awsServices) {
