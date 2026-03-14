@@ -6,7 +6,11 @@
 [![Azure Migrate](https://img.shields.io/badge/Azure_Migrate-Integrated-0078D4?logo=microsoft-azure)](https://learn.microsoft.com/en-us/azure/migrate/)
 [![CI](https://github.com/DarylsCorner/aws-azure-migration-runbook/actions/workflows/ci.yml/badge.svg)](https://github.com/DarylsCorner/aws-azure-migration-runbook/actions/workflows/ci.yml)
 
-Removes AWS-specific in-guest components from Windows and Linux VMs migrated to Azure via **Azure Migrate / ASR**. Every action is **idempotent** and **non-destructive to application binaries** — safe to run during Test Migration and again at final Cutover.
+Removes AWS-specific in-guest components from VMs migrated to Azure via **Azure Migrate / ASR**. Every action is **idempotent** and **non-destructive to application binaries** — safe to run during Test Migration and again at final Cutover.
+
+> **Platform status:**
+> - **Windows** — production-tested ✅
+> - **Linux** — scripts present, not yet validated ⚠️ (coming in a future release)
 
 > **Ready to run a migration?** Go straight to [OPERATOR-GUIDE.md](OPERATOR-GUIDE.md) for the complete step-by-step runbook.
 
