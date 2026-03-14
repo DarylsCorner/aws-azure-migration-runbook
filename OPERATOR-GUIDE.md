@@ -52,7 +52,7 @@ All `az vm run-command` calls in this guide use `@`-prefixed script paths (e.g. 
 ```powershell
 # Confirm you are in the right place
 Get-Location
-Get-ChildItem  # Should show: .github/  infra/  linux/  runbook/  tests/  validation/  windows/  README.md
+Get-ChildItem  # Should show: docs/  linux/  reports/  runbook/  validation/  windows/  README.md  OPERATOR-GUIDE.md
 ```
 
 ### 3. Authenticate
@@ -890,7 +890,8 @@ These catch **unknown or unlisted** AWS artifacts. They appear as `[WARN ]` and 
 
 | Document | Purpose |
 |---|---|
-| [README.md](README.md) | Technical reference — script internals, JSON schema, setup details |
-| [tests/TESTING.md](tests/TESTING.md) | Test strategy, test log, known issues found during development |
+| [README.md](README.md) | Project overview — what it is, how it works, how to use it |
+| [docs/script-reference.md](docs/script-reference.md) | Detailed script internals, JSON schema, Azure Automation setup |
+| [reports/examples/](reports/examples/) | Example JSON output from each migration phase |
 
 
