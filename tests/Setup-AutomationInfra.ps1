@@ -309,9 +309,13 @@ if (-not (Test-Path $winScriptPath)) { throw "Windows cleanup script not found: 
 if (-not (Test-Path $linScriptPath)) { throw "Linux cleanup script not found: $linScriptPath" }
 $winB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content $winScriptPath -Raw -Encoding UTF8)))
 $linB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content $linScriptPath -Raw -Encoding UTF8)))
+$readinessScriptPath = Join-Path $root 'validation\Invoke-MigrationReadiness.ps1'
+if (-not (Test-Path $readinessScriptPath)) { throw "Readiness script not found: $readinessScriptPath" }
+$rdyB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content $readinessScriptPath -Raw -Encoding UTF8)))
 $scriptContent = $scriptContent -replace '__WINDOWS_SCRIPT_B64__', $winB64
 $scriptContent = $scriptContent -replace '__LINUX_SCRIPT_B64__', $linB64
-Write-OK "In-guest scripts embedded as base64 into runbook draft"
+$scriptContent = $scriptContent -replace '__READINESS_SCRIPT_B64__', $rdyB64
+Write-OK "In-guest scripts (cleanup + readiness) embedded as base64 into runbook draft"
 
 $draftResult = Invoke-ArmRest PUT "${rbBaseUri}/draft/content?api-version=$rbApiVer" -Body $scriptContent -Headers @('Content-Type=text/powershell')
 # 200 draft/content returns empty body — check for error prefix

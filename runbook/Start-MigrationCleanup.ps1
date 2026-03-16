@@ -87,8 +87,9 @@ $ErrorActionPreference = 'Stop'
 # Setup-AutomationInfra.ps1 replaces these placeholders with real base64 at
 # publish time. Do not edit these lines manually.
 # ─────────────────────────────────────────────────────────────────────────────
-$embeddedWindowsScriptB64 = '__WINDOWS_SCRIPT_B64__'
-$embeddedLinuxScriptB64   = '__LINUX_SCRIPT_B64__'
+$embeddedWindowsScriptB64   = '__WINDOWS_SCRIPT_B64__'
+$embeddedLinuxScriptB64     = '__LINUX_SCRIPT_B64__'
+$embeddedReadinessScriptB64 = '__READINESS_SCRIPT_B64__'
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging (compatible with Automation output streams)
@@ -297,6 +298,67 @@ sudo /tmp/invoke-aws-cleanup.sh ${dryRunFlag}--phase $phaseFlag --report '$inGue
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Decode embedded readiness script (Windows only — Linux not yet validated)
+# ─────────────────────────────────────────────────────────────────────────────
+$readinessScriptContent = $null
+if ($osType -eq 'Windows') {
+    try {
+        $readinessScriptContent = [Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String($embeddedReadinessScriptB64))
+    } catch {
+        Write-Warning "Could not decode embedded readiness script — post-cleanup readiness check will be skipped: $($_.Exception.Message)"
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto dry-run gate — preview cleanup actions, abort if any errors predicted.
+# Only runs on Windows live-mode invocations ($DryRun = $false).
+# ─────────────────────────────────────────────────────────────────────────────
+if (-not $DryRun -and $osType -eq 'Windows') {
+    Write-RunbookLog "Auto dry-run gate: previewing cleanup actions before live run..."
+    $gateTimestamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $gateReportPath = "C:\Windows\Temp\aws-cleanup-gate-${gateTimestamp}.json"
+    $gateDryRunWrapper = @"
+
+`$params = @{
+    DryRun     = `$true
+    Phase      = '$Phase'
+    ReportPath = '$gateReportPath'
+}
+`$report = . { $scriptContent } @params
+"@
+    try {
+        Invoke-AzVMRunCommand `
+            -ResourceGroupName $ResourceGroupName `
+            -VMName            $VMName `
+            -CommandId         'RunPowerShellScript' `
+            -ScriptString      $gateDryRunWrapper `
+            -ErrorAction       Stop | Out-Null
+
+        $gateReadScript = "try { `$r = Get-Content '$gateReportPath' -Raw -EA Stop | ConvertFrom-Json; [ordered]@{ Errors=`$r.Summary.Errors; Total=`$r.Summary.Total } | ConvertTo-Json -Compress } catch { '{\"Errors\":999}' }"
+        $gateRptResult  = Invoke-AzVMRunCommand `
+            -ResourceGroupName $ResourceGroupName `
+            -VMName            $VMName `
+            -CommandId         'RunPowerShellScript' `
+            -ScriptString      $gateReadScript `
+            -ErrorAction       Stop
+
+        $gateJson    = Get-RunCmdStdOut $gateRptResult 'Windows'
+        $gateSummary = $gateJson | ConvertFrom-Json
+        $gateErrors  = [int]($gateSummary.Errors ?? 999)
+        Write-RunbookLog "Auto dry-run gate: Total=$($gateSummary.Total) PredictedErrors=$gateErrors"
+
+        if ($gateErrors -gt 0) {
+            Write-Error "AUTO DRY-RUN GATE FAILED: $gateErrors predicted error(s). Aborting before live cleanup. Re-run with -DryRun `$true to review the full dry-run output."
+            exit 1
+        }
+        Write-RunbookLog "Auto dry-run gate passed — proceeding with live cleanup."
+    } catch {
+        Write-Warning "Auto dry-run gate check failed: $($_.Exception.Message) — proceeding with live cleanup (manual review recommended)."
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Invoke Run Command
 # ─────────────────────────────────────────────────────────────────────────────
 Write-RunbookLog "Invoking Run Command on VM '$VMName' (OS: $osType, Phase: $Phase, DryRun: $DryRun)..."
@@ -397,4 +459,108 @@ try {
     Write-Warning "Could not retrieve report from VM: $($_.Exception.Message)"
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Post-cleanup readiness check (Windows, live runs only)
+# ─────────────────────────────────────────────────────────────────────────────
+$readinessReport = $null
+if (-not $DryRun -and $osType -eq 'Windows' -and $readinessScriptContent) {
+    Write-RunbookLog "Running post-cleanup readiness check on '$VMName'..."
+    $rdyTimestamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $rdyReportPath = "C:\Windows\Temp\aws-readiness-${rdyTimestamp}.json"
+    $rdyWrapper    = @"
+
+`$params = @{
+    Mode       = 'Post'
+    Phase      = '$Phase'
+    ReportPath = '$rdyReportPath'
+}
+`$report = . { $readinessScriptContent } @params
+"@
+    try {
+        $rdyResult = Invoke-AzVMRunCommand `
+            -ResourceGroupName $ResourceGroupName `
+            -VMName            $VMName `
+            -CommandId         'RunPowerShellScript' `
+            -ScriptString      $rdyWrapper `
+            -ErrorAction       Stop
+
+        $rdyOutput = Get-RunCmdStdOut $rdyResult 'Windows'
+        $rdyStdErr = Get-RunCmdStdErr $rdyResult 'Windows'
+        if ($rdyOutput) { Write-RunbookLog "=== Readiness Output ==="; Write-Output $rdyOutput }
+        if ($rdyStdErr -and $rdyStdErr.Trim()) { Write-Warning "=== Readiness StdErr ==="; Write-Warning $rdyStdErr }
+
+        $rdyReadScript = "try { `$r = Get-Content '$rdyReportPath' -Raw -EA Stop | ConvertFrom-Json; [ordered]@{ Summary=`$r.Summary; PostAssertions=`$r.PostAssertions; WarningNames=@(`$r.Findings | Where-Object { `$_.Status -eq 'Warning' } | Select-Object -ExpandProperty Name) } | ConvertTo-Json -Depth 4 -Compress } catch { '{}' }"
+        $rdyRptResult  = Invoke-AzVMRunCommand `
+            -ResourceGroupName $ResourceGroupName `
+            -VMName            $VMName `
+            -CommandId         'RunPowerShellScript' `
+            -ScriptString      $rdyReadScript `
+            -ErrorAction       Stop
+
+        $rdyJson = Get-RunCmdStdOut $rdyRptResult 'Windows'
+        if ($rdyJson -and $rdyJson.Trim()) {
+            $readinessReport = $rdyJson | ConvertFrom-Json
+            Write-RunbookLog "════════ Readiness Report ════════"
+            Write-RunbookLog "  Found     : $($readinessReport.Summary.Found)"
+            Write-RunbookLog "  Clean     : $($readinessReport.Summary.NotFound)"
+            Write-RunbookLog "  Warnings  : $($readinessReport.Summary.Warning)"
+            Write-RunbookLog "  Pass      : $($readinessReport.Summary.Pass)"
+            Write-RunbookLog "  CleanState: $($readinessReport.PostAssertions.CleanState)"
+            Write-RunbookLog "══════════════════════════════════"
+        }
+    } catch {
+        Write-Warning "Post-cleanup readiness check failed: $($_.Exception.Message)"
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Final gate evaluation — Passed | Failed | NeedsReview | DryRunOnly
+# ─────────────────────────────────────────────────────────────────────────────
+$verdictDetail = [System.Collections.Generic.List[string]]::new()
+if ($DryRun) {
+    $verdict = 'DryRunOnly'
+    $verdictDetail.Add('Dry-run mode — no changes made, no readiness check performed')
+} else {
+    $cleanupErrors     = if ($report -and $report.Summary)                { [int]($report.Summary.Errors ?? 0) }           else { 999 }
+    $readinessFound    = if ($readinessReport -and $readinessReport.Summary) { [int]($readinessReport.Summary.Found ?? -1) }  else { -1 }
+    $readinessWarnings = if ($readinessReport -and $readinessReport.Summary) { [int]($readinessReport.Summary.Warning ?? 0) } else { 0 }
+    $cleanState        = $readinessReport -and $readinessReport.PostAssertions -and ($readinessReport.PostAssertions.CleanState -eq $true)
+
+    if ($cleanupErrors -gt 0) {
+        $verdict = 'Failed'
+        $verdictDetail.Add("Cleanup reported $cleanupErrors error(s)")
+    } elseif ($readinessFound -lt 0) {
+        $verdict = 'NeedsReview'
+        $verdictDetail.Add('Readiness check did not run or report could not be parsed')
+    } elseif ($readinessFound -gt 0) {
+        $verdict = 'Failed'
+        $verdictDetail.Add("Readiness found $readinessFound AWS component(s) still present")
+    } elseif ($readinessWarnings -gt 0) {
+        $verdict = 'NeedsReview'
+        $verdictDetail.Add("$readinessWarnings heuristic warning(s) require manual review")
+    } elseif ($cleanState) {
+        $verdict = 'Passed'
+        $verdictDetail.Add('Cleanup errors: 0 | AWS components found: 0 | Warnings: 0 | Azure agent: healthy')
+    } else {
+        $verdict = 'NeedsReview'
+        $verdictDetail.Add('CleanState assertion not confirmed — review readiness report manually')
+    }
+}
+
+$finalResult = [ordered]@{
+    Verdict          = $verdict
+    VMName           = $VMName
+    Phase            = $Phase
+    DryRun           = $DryRun
+    Timestamp        = (Get-Date -Format 'o')
+    Detail           = @($verdictDetail)
+    CleanupSummary   = if ($report)           { $report.Summary }          else { $null }
+    ReadinessSummary = if ($readinessReport)   { $readinessReport.Summary } else { $null }
+}
+$finalJson = $finalResult | ConvertTo-Json -Depth 4 -Compress
+
+Write-RunbookLog "════════════ FINAL VERDICT: $verdict ════════════"
+foreach ($d in $verdictDetail) { Write-RunbookLog "  $d" }
+Write-RunbookLog "══════════════════════════════════════════════════"
+Write-Output "VERDICT: $finalJson"
 Write-RunbookLog "Runbook complete. VM: $VMName | Phase: $Phase | DryRun: $DryRun"
